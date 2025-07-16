@@ -5,6 +5,8 @@ import os
 import requests
 import ffmpeg
 import json
+import boto3
+import base64
 
 app = Flask(__name__)
 
@@ -71,8 +73,7 @@ def status_stream(filename):
 
 def analyze_file(bucket, key):
     filename = key.split('/')[-1]
-    analysis_results[filename] = {'status': 'analyzing'}
-    # Download file from S3 (LocalStack)
+    analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0}
     s3_url = f"http://localstack:4566/{bucket}/{key}"
     local_path = f"/tmp/{filename}"
     try:
@@ -80,21 +81,89 @@ def analyze_file(bucket, key):
         with open(local_path, 'wb') as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
-        # Analyze video duration
-        probe = ffmpeg.probe(local_path)
-        duration = float(probe['format']['duration'])
+        import subprocess
+        import ffmpeg
+        # Get video duration for progress estimation
+        try:
+            probe = ffmpeg.probe(local_path)
+            duration = float(probe['format']['duration'])
+        except Exception:
+            duration = None
+        scene_cmd = [
+            'ffmpeg', '-i', local_path,
+            '-filter_complex', "select='gt(scene,0.3)',showinfo",
+            '-f', 'null', '-'
+        ]
+        process = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        scene_timestamps = []
+        last_progress = 0.0
+        for line in process.stderr:
+            if 'showinfo' in line and 'pts_time:' in line:
+                parts = line.split('pts_time:')
+                if len(parts) > 1:
+                    try:
+                        ts = float(parts[1].split()[0])
+                        scene_timestamps.append(ts)
+                        # Estimate progress
+                        progress = min(ts / duration, 1.0) if duration else 0.0
+                        # Only update if progress increases
+                        if progress > last_progress or len(scene_timestamps) == 1:
+                            last_progress = progress
+                            analysis_results[filename] = {
+                                'status': 'analyzing',
+                                'scene_cuts': scene_timestamps.copy(),
+                                'progress': progress
+                            }
+                    except Exception:
+                        pass
+        process.wait()
         analysis_results[filename] = {
             'status': 'done',
-            'duration': duration
+            'scene_cuts': scene_timestamps,
+            'progress': 1.0
         }
     except Exception as e:
         analysis_results[filename] = {
             'status': 'error',
-            'error': str(e)
+            'error': str(e),
+            'progress': 0.0
         }
     finally:
         if os.path.exists(local_path):
             os.remove(local_path)
 
+def poll_sqs():
+    sqs = boto3.client(
+        'sqs',
+        region_name='us-east-1',
+        endpoint_url='http://localstack:4566',
+        aws_access_key_id='test',
+        aws_secret_access_key='test',
+    )
+    queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+    while True:
+        resp = sqs.receive_message(
+            QueueUrl=queue_url,
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=10
+        )
+        messages = resp.get('Messages', [])
+        for msg in messages:
+            try:
+                body = json.loads(msg['Body'])
+                # S3 event notifications may be double-encoded
+                if 'Message' in body:
+                    body = json.loads(body['Message'])
+                record = body['Records'][0]
+                bucket = record['s3']['bucket']['name']
+                key = record['s3']['object']['key']
+                threading.Thread(target=analyze_file, args=(bucket, key)).start()
+            except Exception as e:
+                print(f"Error processing SQS message: {e}")
+            finally:
+                sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg['ReceiptHandle'])
+        time.sleep(1)
+
 if __name__ == '__main__':
+    threading.Thread(target=poll_sqs, daemon=True).start()
     app.run(host='0.0.0.0', port=5000) 

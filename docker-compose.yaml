@@ -2,12 +2,12 @@ version: '3.8'
 
 services:
   localstack:
-    image: localstack/localstack:1.4.0
+    image: localstack/localstack:latest
     container_name: localstack
     ports:
       - "4566:4566"      # Main LocalStack edge port for all services
     environment:
-      - SERVICES=s3
+      - SERVICES=s3,sqs
       - DEBUG=1
       # - DATA_DIR=/tmp/localstack/data
       - DOCKER_HOST=unix:///var/run/docker.sock

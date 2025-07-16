@@ -23,7 +23,8 @@ function App() {
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
   const [analysisStatus, setAnalysisStatus] = useState("");
-  const [duration, setDuration] = useState(null);
+  // Removed duration state
+  const [sceneCuts, setSceneCuts] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
   const fileInputRef = useRef();
   const eventSourceRef = useRef();
@@ -43,7 +44,8 @@ function App() {
   const listenAnalysisSSE = (filename) => {
     setAnalyzing(true);
     setAnalysisStatus("Analyzing...");
-    setDuration(null);
+    // Removed duration reset
+    setSceneCuts([]);
     if (eventSourceRef.current) eventSourceRef.current.close();
     const es = new window.EventSource(`${INSPECTOR_URL}/status/stream/${encodeURIComponent(filename)}`);
     eventSourceRef.current = es;
@@ -52,14 +54,22 @@ function App() {
         const data = JSON.parse(event.data);
         if (data.status === "done") {
           setAnalysisStatus("Analysis complete!");
-          setDuration(data.duration);
+          setSceneCuts(Array.isArray(data.scene_cuts) ? data.scene_cuts : []);
+          setProgress(100);
           setAnalyzing(false);
           es.close();
         } else if (data.status === "analyzing") {
           setAnalysisStatus("Analyzing...");
+          setSceneCuts(Array.isArray(data.scene_cuts) ? data.scene_cuts : []);
+          setProgress(
+            typeof data.progress === 'number' && isFinite(data.progress)
+              ? Math.round(data.progress * 100)
+              : 0
+          );
         } else if (data.status === "error") {
           setAnalysisStatus("Analysis failed");
-          setDuration(null);
+          setSceneCuts([]);
+          setProgress(0);
           setAnalyzing(false);
           es.close();
         } else {
@@ -68,12 +78,14 @@ function App() {
       } catch (err) {
         setAnalysisStatus("Error parsing SSE");
         setAnalyzing(false);
+        setSceneCuts([]);
         es.close();
       }
     };
     es.onerror = () => {
       setAnalysisStatus("Error contacting inspector");
       setAnalyzing(false);
+      setSceneCuts([]);
       es.close();
     };
   };
@@ -82,7 +94,8 @@ function App() {
     setStatus("Uploading...");
     setProgress(0);
     setAnalysisStatus("");
-    setDuration(null);
+    // Removed duration reset
+    setSceneCuts([]);
     setAnalyzing(false);
     try {
       const command = new PutObjectCommand({
@@ -161,14 +174,14 @@ function App() {
           </div>
         </div>
         <p style={{ fontSize: 20, margin: 0 }}>{status}</p>
-        {/* Analysis Progress Bar */}
-        {progress === 100 && (
+        {/* Analysis Status, Progress Bar, and Scene Cut Timestamps */}
+        {progress > 0 && (
           <>
             <div style={{ width: 320, height: 24, background: "#e0e0e0", borderRadius: 12, overflow: "hidden", marginBottom: 16, marginTop: 16 }}>
               <div style={{
-                width: analyzing ? "80%" : duration !== null ? "100%" : "0%",
+                width: `${progress}%`,
                 height: "100%",
-                background: analyzing ? "#ff9800" : duration !== null ? "#4caf50" : "#e0e0e0",
+                background: progress === 100 ? "#4caf50" : "#ff9800",
                 transition: "width 0.3s",
                 display: "flex",
                 alignItems: "center",
@@ -177,8 +190,34 @@ function App() {
                 fontWeight: 600,
                 fontSize: 16
               }}>
-                {analyzing ? analysisStatus : duration !== null ? `Duration: ${duration.toFixed(2)}s` : ""}
+                {progress}%
               </div>
+            </div>
+            <div style={{ marginTop: 16, textAlign: "center" }}>
+              <div style={{ fontWeight: 600, fontSize: 18, marginBottom: 8 }}>{analysisStatus}</div>
+              {sceneCuts.length > 0 && (
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>Scene Cut Timestamps:</div>
+                  <div style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 8,
+                    justifyContent: "center"
+                  }}>
+                    {sceneCuts.map((ts, i) => (
+                      <span key={i} style={{
+                        background: "#f0f0f0",
+                        borderRadius: 6,
+                        padding: "4px 10px",
+                        fontSize: 16,
+                        margin: 2
+                      }}>
+                        {Number.isFinite(ts) ? `${ts}s` : 'N/A'}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </>
         )}
