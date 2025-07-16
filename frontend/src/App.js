@@ -248,7 +248,7 @@ function App() {
         {/* Single Progress Bar for Upload + Analysis */}
         <div style={{ width: 320, height: 24, background: "#e0e0e0", borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
           <div style={{
-            width: `${Math.round(combinedProgress)}%`,
+            width: `${Math.round(uploadProgress * 0.5 + (uploadProgress === 100 ? analysisProgress * 0.5 : 0))}%`,
             height: "100%",
             background: uploadProgress === 100 && analysisProgress === 100 ? "#4caf50" : "#4f8cff",
             transition: "width 0.3s",
