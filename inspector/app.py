@@ -74,12 +74,13 @@ def status_stream(filename):
 def analyze_file(bucket, key):
     import time
     filename = key.split('/')[-1]
-    analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0}
+    analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0}
     s3_url = f"http://localstack:4566/{bucket}/{key}"
     local_path = f"/tmp/{filename}"
     try:
         # Retry logic for download
         max_retries = 5
+        total_frames = 0
         for attempt in range(max_retries):
             r = requests.get(s3_url, stream=True)
             with open(local_path, 'wb') as f:
@@ -90,6 +91,20 @@ def analyze_file(bucket, key):
             try:
                 probe = ffmpeg.probe(local_path)
                 duration = float(probe['format']['duration'])
+                # Get total frame count using ffprobe
+                streams = probe.get('streams', [])
+                video_stream = next((s for s in streams if s.get('codec_type') == 'video'), None)
+                if video_stream and 'nb_frames' in video_stream:
+                    total_frames = int(video_stream['nb_frames'])
+                else:
+                    # fallback: use ffprobe to count frames
+                    import subprocess
+                    ffprobe_cmd = [
+                        'ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0',
+                        '-show_entries', 'stream=nb_read_frames', '-of', 'default=nokey=1:noprint_wrappers=1', local_path
+                    ]
+                    ffprobe_out = subprocess.check_output(ffprobe_cmd, text=True).strip()
+                    total_frames = int(ffprobe_out) if ffprobe_out.isdigit() else 0
                 break  # Success
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -106,36 +121,50 @@ def analyze_file(bucket, key):
         process = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         scene_timestamps = []
         last_progress = 0.0
+        current_frame = 0
         for line in process.stderr:
-            if 'showinfo' in line and 'pts_time:' in line:
-                parts = line.split('pts_time:')
-                if len(parts) > 1:
+            if 'showinfo' in line:
+                # Parse frame number
+                if 'n:' in line:
                     try:
-                        ts = float(parts[1].split()[0])
-                        scene_timestamps.append(ts)
-                        # Estimate progress
-                        progress = min(ts / duration, 1.0) if duration else 0.0
-                        # Only update if progress increases
-                        if progress > last_progress or len(scene_timestamps) == 1:
-                            last_progress = progress
-                            analysis_results[filename] = {
-                                'status': 'analyzing',
-                                'scene_cuts': scene_timestamps.copy(),
-                                'progress': progress
-                            }
+                        n_part = line.split('n:')[1].split(' ')[0]
+                        frame_num = int(n_part)
+                        current_frame = frame_num
                     except Exception:
                         pass
+                # Parse scene cut timestamp
+                if 'pts_time:' in line:
+                    parts = line.split('pts_time:')
+                    if len(parts) > 1:
+                        try:
+                            ts = float(parts[1].split()[0])
+                            scene_timestamps.append(ts)
+                        except Exception:
+                            pass
+                # Update progress by frame
+                if total_frames > 0 and current_frame > 0:
+                    progress = min(current_frame / total_frames, 1.0)
+                    if progress > last_progress or len(scene_timestamps) == 1:
+                        last_progress = progress
+                        analysis_results[filename] = {
+                            'status': 'analyzing',
+                            'scene_cuts': scene_timestamps.copy(),
+                            'progress': progress,
+                            'total_cuts': 0  # Will set at the end
+                        }
         process.wait()
         analysis_results[filename] = {
             'status': 'done',
             'scene_cuts': scene_timestamps,
-            'progress': 1.0
+            'progress': 1.0,
+            'total_cuts': len(scene_timestamps)
         }
     except Exception as e:
         analysis_results[filename] = {
             'status': 'error',
             'error': str(e),
-            'progress': 0.0
+            'progress': 0.0,
+            'total_cuts': 0
         }
     finally:
         if os.path.exists(local_path):
