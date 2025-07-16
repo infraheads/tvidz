@@ -1,0 +1,20 @@
+{
+  "LambdaFunctionConfigurations": [],
+  "QueueConfigurations": [],
+  "TopicConfigurations": [],
+  "EventBridgeConfiguration": null,
+  "NotificationConfiguration": {
+    "QueueConfigurations": [],
+    "TopicConfigurations": [],
+    "LambdaFunctionConfigurations": [],
+    "CloudFunctionConfigurations": [],
+    "WebhookConfigurations": [
+      {
+        "Id": "InspectorWebhook",
+        "Events": ["s3:ObjectCreated:*"],
+        "Filter": {},
+        "Target": "http://inspector:5000/notify"
+      }
+    ]
+  }
+} 

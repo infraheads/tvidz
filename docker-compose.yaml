@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  localstack:
+    image: localstack/localstack:1.4.0
+    container_name: localstack
+    ports:
+      - "4566:4566"      # Main LocalStack edge port for all services
+    environment:
+      - SERVICES=s3
+      - DEBUG=1
+      # - DATA_DIR=/tmp/localstack/data
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - LS_S3_WEBHOOKS=videos=http://inspector:5000/notify
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    volumes:
+      # - localstack-tmp:/tmp/localstack
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_S3_ENDPOINT=http://localhost:4566
+      - REACT_APP_S3_BUCKET=videos
+      - HOST=0.0.0.0
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - localstack
+
+  inspector:
+    build: ./inspector
+    container_name: inspector
+    ports:
+      - "5001:5000"
+    depends_on:
+      - localstack
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    networks:
+      - default
+
+# volumes:
+#   localstack-tmp:
