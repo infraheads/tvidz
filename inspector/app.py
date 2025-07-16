@@ -72,23 +72,32 @@ def status_stream(filename):
     return response
 
 def analyze_file(bucket, key):
+    import time
     filename = key.split('/')[-1]
     analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0}
     s3_url = f"http://localstack:4566/{bucket}/{key}"
     local_path = f"/tmp/{filename}"
     try:
-        r = requests.get(s3_url, stream=True)
-        with open(local_path, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
+        # Retry logic for download
+        max_retries = 5
+        for attempt in range(max_retries):
+            r = requests.get(s3_url, stream=True)
+            with open(local_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            # Try probing the file to see if it's valid
+            import ffmpeg
+            try:
+                probe = ffmpeg.probe(local_path)
+                duration = float(probe['format']['duration'])
+                break  # Success
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                else:
+                    raise Exception(f"File download incomplete or corrupt after {max_retries} attempts: {e}")
         import subprocess
-        import ffmpeg
-        # Get video duration for progress estimation
-        try:
-            probe = ffmpeg.probe(local_path)
-            duration = float(probe['format']['duration'])
-        except Exception:
-            duration = None
+        # Get video duration for progress estimation (already set above)
         scene_cmd = [
             'ffmpeg', '-i', local_path,
             '-filter_complex', "select='gt(scene,0.3)',showinfo",

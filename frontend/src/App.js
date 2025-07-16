@@ -3,6 +3,7 @@ import {
   S3Client,
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const REGION = "us-east-1"; // dummy region for LocalStack
 const S3_ENDPOINT = process.env.REACT_APP_S3_ENDPOINT || "http://localhost:4566";
@@ -21,13 +22,17 @@ const s3Client = new S3Client({
 
 function App() {
   const [status, setStatus] = useState("");
-  const [progress, setProgress] = useState(0);
-  const [analysisStatus, setAnalysisStatus] = useState("");
-  // Removed duration state
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [barLabel, setBarLabel] = useState("");
   const [sceneCuts, setSceneCuts] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
+  const [uploadDuration, setUploadDuration] = useState(null);
+  const [analysisDuration, setAnalysisDuration] = useState(null);
   const fileInputRef = useRef();
   const eventSourceRef = useRef();
+  const uploadStartRef = useRef(null);
+  const analysisStartRef = useRef(null);
 
   const handleUploadClick = () => {
     fileInputRef.current.value = null; // Always reset
@@ -43,9 +48,11 @@ function App() {
 
   const listenAnalysisSSE = (filename) => {
     setAnalyzing(true);
-    setAnalysisStatus("Analyzing...");
-    // Removed duration reset
+    setBarLabel("Analyzing...");
     setSceneCuts([]);
+    setAnalysisProgress(0);
+    setAnalysisDuration(null);
+    analysisStartRef.current = Date.now();
     if (eventSourceRef.current) eventSourceRef.current.close();
     const es = new window.EventSource(`${INSPECTOR_URL}/status/stream/${encodeURIComponent(filename)}`);
     eventSourceRef.current = es;
@@ -53,65 +60,133 @@ function App() {
       try {
         const data = JSON.parse(event.data);
         if (data.status === "done") {
-          setAnalysisStatus("Analysis complete!");
+          setBarLabel("Analysis complete!");
           setSceneCuts(Array.isArray(data.scene_cuts) ? data.scene_cuts : []);
-          setProgress(100);
+          setAnalysisProgress(100);
           setAnalyzing(false);
+          if (analysisStartRef.current) {
+            setAnalysisDuration(((Date.now() - analysisStartRef.current) / 1000).toFixed(2));
+            analysisStartRef.current = null;
+          }
           es.close();
         } else if (data.status === "analyzing") {
-          setAnalysisStatus("Analyzing...");
-          setSceneCuts(Array.isArray(data.scene_cuts) ? data.scene_cuts : []);
-          setProgress(
+          setBarLabel("Analyzing...");
+          setSceneCuts((prev) => {
+            if (!Array.isArray(data.scene_cuts)) return prev;
+            if (data.scene_cuts.length > prev.length) {
+              return [...prev, ...data.scene_cuts.slice(prev.length)];
+            }
+            return prev;
+          });
+          setAnalysisProgress(
             typeof data.progress === 'number' && isFinite(data.progress)
               ? Math.round(data.progress * 100)
               : 0
           );
         } else if (data.status === "error") {
-          setAnalysisStatus("Analysis failed");
+          setBarLabel("Analysis failed");
           setSceneCuts([]);
-          setProgress(0);
+          setAnalysisProgress(0);
           setAnalyzing(false);
+          if (analysisStartRef.current) {
+            setAnalysisDuration(((Date.now() - analysisStartRef.current) / 1000).toFixed(2));
+            analysisStartRef.current = null;
+          }
           es.close();
         } else {
-          setAnalysisStatus("Pending analysis...");
+          setBarLabel("Pending analysis...");
         }
       } catch (err) {
-        setAnalysisStatus("Error parsing SSE");
+        setBarLabel("Error parsing SSE");
         setAnalyzing(false);
         setSceneCuts([]);
+        if (analysisStartRef.current) {
+          setAnalysisDuration(((Date.now() - analysisStartRef.current) / 1000).toFixed(2));
+          analysisStartRef.current = null;
+        }
         es.close();
       }
     };
     es.onerror = () => {
-      setAnalysisStatus("Error contacting inspector");
+      setBarLabel("Error contacting inspector");
       setAnalyzing(false);
       setSceneCuts([]);
+      if (analysisStartRef.current) {
+        setAnalysisDuration(((Date.now() - analysisStartRef.current) / 1000).toFixed(2));
+        analysisStartRef.current = null;
+      }
       es.close();
     };
   };
 
   const uploadFile = async (file) => {
-    setStatus("Uploading...");
-    setProgress(0);
-    setAnalysisStatus("");
-    // Removed duration reset
+    setStatus("");
+    setUploadProgress(0);
+    setAnalysisProgress(0);
+    setBarLabel("Uploading...");
     setSceneCuts([]);
     setAnalyzing(false);
+    setUploadDuration(null);
+    setAnalysisDuration(null);
+    uploadStartRef.current = Date.now();
     try {
+      // 1. Generate pre-signed PUT URL
       const command = new PutObjectCommand({
         Bucket: BUCKET,
         Key: file.name,
-        Body: file,
         ACL: "public-read",
+        ContentType: file.type || "application/octet-stream",
       });
-      await s3Client.send(command);
-      setStatus("Upload completed!");
-      setProgress(100);
-      fileInputRef.current.value = null;
-      listenAnalysisSSE(file.name);
+      const url = await getSignedUrl(s3Client, command, { expiresIn: 300 });
+
+      // 2. Upload using XMLHttpRequest for progress
+      await new Promise((resolve, reject) => {
+        const xhr = new window.XMLHttpRequest();
+        xhr.open("PUT", url, true);
+        xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percent = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(percent);
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            setBarLabel("Upload completed! Starting analysis...");
+            setUploadProgress(100);
+            if (uploadStartRef.current) {
+              setUploadDuration(((Date.now() - uploadStartRef.current) / 1000).toFixed(2));
+              uploadStartRef.current = null;
+            }
+            fileInputRef.current.value = null;
+            listenAnalysisSSE(file.name);
+            resolve();
+          } else {
+            setBarLabel(`Upload failed: ${xhr.statusText}`);
+            if (uploadStartRef.current) {
+              setUploadDuration(((Date.now() - uploadStartRef.current) / 1000).toFixed(2));
+              uploadStartRef.current = null;
+            }
+            reject(new Error(`Upload failed: ${xhr.statusText}`));
+          }
+        };
+        xhr.onerror = () => {
+          setBarLabel("Upload failed. Network error.");
+          if (uploadStartRef.current) {
+            setUploadDuration(((Date.now() - uploadStartRef.current) / 1000).toFixed(2));
+            uploadStartRef.current = null;
+          }
+          reject(new Error("Upload failed. Network error."));
+        };
+        xhr.send(file);
+      });
     } catch (err) {
       console.error("Upload failed:", err);
-      setStatus("Upload failed. Check console.");
+      setBarLabel("Upload failed. Check console.");
+      if (uploadStartRef.current) {
+        setUploadDuration(((Date.now() - uploadStartRef.current) / 1000).toFixed(2));
+        uploadStartRef.current = null;
+      }
     }
   };
 
@@ -156,12 +231,12 @@ function App() {
         >
           Upload
         </button>
-        {/* Upload Progress Bar */}
-        <div style={{ width: 320, height: 24, background: "#e0e0e0", borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
+        {/* Single Progress Bar for Upload + Analysis */}
+        <div style={{ width: 320, height: 24, background: "#e0e0e0", borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
           <div style={{
-            width: `${progress}%`,
+            width: `${Math.round(uploadProgress * 0.5 + (uploadProgress === 100 ? analysisProgress * 0.5 : 0))}%`,
             height: "100%",
-            background: progress === 100 ? "#4caf50" : "#4f8cff",
+            background: uploadProgress === 100 && analysisProgress === 100 ? "#4caf50" : "#4f8cff",
             transition: "width 0.3s",
             display: "flex",
             alignItems: "center",
@@ -170,56 +245,38 @@ function App() {
             fontWeight: 600,
             fontSize: 16
           }}>
-            {progress > 0 ? `${progress}%` : ""}
+            {barLabel}
           </div>
         </div>
-        <p style={{ fontSize: 20, margin: 0 }}>{status}</p>
-        {/* Analysis Status, Progress Bar, and Scene Cut Timestamps */}
-        {progress > 0 && (
-          <>
-            <div style={{ width: 320, height: 24, background: "#e0e0e0", borderRadius: 12, overflow: "hidden", marginBottom: 16, marginTop: 16 }}>
-              <div style={{
-                width: `${progress}%`,
-                height: "100%",
-                background: progress === 100 ? "#4caf50" : "#ff9800",
-                transition: "width 0.3s",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#fff",
-                fontWeight: 600,
-                fontSize: 16
-              }}>
-                {progress}%
-              </div>
+        {/* Durations for upload and analysis */}
+        <div style={{ marginBottom: 16, fontSize: 16, color: '#333', minHeight: 24 }}>
+          {uploadDuration && <span>Upload duration: {uploadDuration}s</span>}
+          {uploadDuration && analysisDuration && <span> &nbsp;|&nbsp; </span>}
+          {analysisDuration && <span>Analysis duration: {analysisDuration}s</span>}
+        </div>
+        {/* Scene Cut Timestamps */}
+        {sceneCuts.length > 0 && (
+          <div style={{ marginTop: 16, textAlign: "center" }}>
+            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>Scene Cut Timestamps:</div>
+            <div style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 8,
+              justifyContent: "center"
+            }}>
+              {sceneCuts.map((ts, i) => (
+                <span key={i} style={{
+                  background: "#f0f0f0",
+                  borderRadius: 6,
+                  padding: "4px 10px",
+                  fontSize: 16,
+                  margin: 2
+                }}>
+                  {Number.isFinite(ts) ? `${ts}s` : 'N/A'}
+                </span>
+              ))}
             </div>
-            <div style={{ marginTop: 16, textAlign: "center" }}>
-              <div style={{ fontWeight: 600, fontSize: 18, marginBottom: 8 }}>{analysisStatus}</div>
-              {sceneCuts.length > 0 && (
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>Scene Cut Timestamps:</div>
-                  <div style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 8,
-                    justifyContent: "center"
-                  }}>
-                    {sceneCuts.map((ts, i) => (
-                      <span key={i} style={{
-                        background: "#f0f0f0",
-                        borderRadius: 6,
-                        padding: "4px 10px",
-                        fontSize: 16,
-                        margin: 2
-                      }}>
-                        {Number.isFinite(ts) ? `${ts}s` : 'N/A'}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </>
+          </div>
         )}
       </div>
     </div>
