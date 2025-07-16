@@ -93,6 +93,8 @@ def analyze_file(bucket, key):
     import time
     import subprocess
     filename = key.split('/')[-1]
+    analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0}
+    s3_url = f"http://localstack:4566/{bucket}/{key}"
     local_path = f"/tmp/{filename}"
     # Ensure no stale result or file
     with analysis_lock:
@@ -107,7 +109,6 @@ def analyze_file(bucket, key):
     print(f"[analysis-triggered] Starting analysis for {filename}")
     with analysis_lock:
         analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0}
-    s3_url = f"http://localstack:4566/{bucket}/{key}"
     try:
         # Retry logic for download
         max_retries = 5
@@ -181,31 +182,26 @@ def analyze_file(bucket, key):
         scene_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'info',
             '-i', local_path,
-            '-filter_complex', "select='gt(scene,0.3)',showinfo",
+            '-vf', 'select=gt(scene\,0.4),showinfo',
             '-f', 'null', '-'
         ]
         process2 = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
         scene_timestamps = []
         for line in process2.stderr:
             if "showinfo" in line and "pts_time:" in line:
-                parts = line.split('pts_time:')
-                if len(parts) > 1:
-                    try:
-                        ts = float(parts[1].split()[0])
-                        scene_timestamps.append(ts)
-                    except Exception:
-                        pass
+                try:
+                    ts = float(line.split('pts_time:')[1].split()[0])
+                    scene_timestamps.append(ts)
+                except Exception:
+                    pass
         process2.wait()
         with analysis_lock:
-            analysis_results[filename].update({
+            analysis_results[filename] = {
                 'status': 'done',
                 'scene_cuts': scene_timestamps,
                 'progress': 1.0,
                 'total_cuts': len(scene_timestamps)
-            })
-        print(f"[analysis-complete] Analysis done for {filename}, removing result from memory.")
-        with analysis_lock:
-            del analysis_results[filename]
+            }
     except Exception as e:
         with analysis_lock:
             analysis_results[filename] = {
@@ -214,16 +210,13 @@ def analyze_file(bucket, key):
                 'progress': 0.0,
                 'total_cuts': 0
             }
-        print(f"[analysis-error] Analysis failed for {filename}, removing result from memory.")
-        with analysis_lock:
-            del analysis_results[filename]
     finally:
         if os.path.exists(local_path):
             try:
                 os.remove(local_path)
-                print(f"[cleanup] Removed file after analysis: {local_path}")
+                print(f"[cleanup] Removed file: {local_path}")
             except Exception as e:
-                print(f"[cleanup] Failed to remove file after analysis: {local_path} ({e})")
+                print(f"[cleanup] Failed to remove file: {local_path} ({e})")
 
 def poll_sqs():
     import botocore
