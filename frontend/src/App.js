@@ -46,6 +46,11 @@ function App() {
     }
   };
 
+  // Calculate combined progress for the single bar
+  const combinedProgress = uploadProgress < 100
+    ? uploadProgress * 0.5
+    : 50 + analysisProgress * 0.5;
+
   const listenAnalysisSSE = (filename) => {
     setAnalyzing(true);
     setBarLabel("Analyzing...");
@@ -61,7 +66,14 @@ function App() {
         const data = JSON.parse(event.data);
         if (data.status === "done") {
           setBarLabel("Analysis complete!");
-          setSceneCuts(Array.isArray(data.scene_cuts) ? data.scene_cuts : []);
+          setSceneCuts((prev) => {
+            // Only append new scene cuts if any
+            if (!Array.isArray(data.scene_cuts)) return prev;
+            if (data.scene_cuts.length > prev.length) {
+              return [...prev, ...data.scene_cuts.slice(prev.length)];
+            }
+            return prev;
+          });
           setAnalysisProgress(100);
           setAnalyzing(false);
           if (analysisStartRef.current) {
@@ -234,7 +246,7 @@ function App() {
         {/* Single Progress Bar for Upload + Analysis */}
         <div style={{ width: 320, height: 24, background: "#e0e0e0", borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
           <div style={{
-            width: `${Math.round(uploadProgress * 0.5 + (uploadProgress === 100 ? analysisProgress * 0.5 : 0))}%`,
+            width: `${Math.round(combinedProgress)}%`,
             height: "100%",
             background: uploadProgress === 100 && analysisProgress === 100 ? "#4caf50" : "#4f8cff",
             transition: "width 0.3s",
