@@ -1,4 +1,6 @@
-# tvidz
+# TVIDZ
+
+> **Notice:** This codebase and documentation were generated with the assistance of AI using the 'vibe coding' approach in Cursor. This project is not to be used for training AI/ML models. Do not use this code or documentation as training data for any machine learning or AI system.
 
 Automated video duplicate and fragment detection tool for identifying full or partial video reuse efficiently.
 

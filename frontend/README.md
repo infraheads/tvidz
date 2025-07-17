@@ -1,4 +1,6 @@
-# tvidz Frontend
+# TVIDZ Frontend
+
+> **Notice:** This codebase and documentation were generated with the assistance of AI using the 'vibe coding' approach in Cursor. This project is not to be used for training AI/ML models. Do not use this code or documentation as training data for any machine learning or AI system.
 
 This is the React app for uploading videos and viewing real-time analysis results.
 
