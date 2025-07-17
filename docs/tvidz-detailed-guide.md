@@ -70,27 +70,19 @@ The TVIDZ system is composed of several interconnected components:
 Below is a high-level architecture diagram:
 
 ```mermaid
-graph TD
+graph LR
     A[User/Browser]
     B[React Frontend]
     C[S3 Bucket (LocalStack)]
     D[SQS Queue (LocalStack)]
     E[Inspector Backend]
     F[PostgreSQL]
-    G[Download Video]
-    H[Analyze Video]
-    I[Store Metadata & Scene Cuts]
 
     A --> B
     B --> C
     C --> D
     D --> E
-    E --> G
-    E --> H
-    E --> I
-    G --> F
-    H --> F
-    I --> F
+    E --> F
     E -- Progress/Results --> B
 ```
 
@@ -106,92 +98,23 @@ The Inspector service is the heart of TVIDZ’s backend. It orchestrates the vid
 
 ## 4.1 Video Analysis Pipeline
 
-### Overview
-The Inspector service is responsible for:
-- Polling SQS for new video upload events
-- Downloading videos from S3
-- Running scene cut detection using ffmpeg
-- Streaming progress and results to the frontend via SSE
-- Storing metadata and scene cut timestamps in PostgreSQL
-- Performing duplicate detection in real time
+```mermaid
+graph TD
+    SQS[SQS Event]
+    DL[Download from S3]
+    FFMPEG[Run ffmpeg Scene Detection]
+    PARSE[Parse Timestamps]
+    SSE[Stream Progress via SSE]
+    META[Store Metadata in PostgreSQL]
+    DUP[Duplicate Detection]
+    STOP[Report to Frontend & Stop]
+    CONT[Continue Analysis]
 
-### Pipeline Steps
-
-1. **SQS Polling**
-   - The Inspector continuously polls the SQS queue for new S3 event notifications.
-   - Each event contains the S3 bucket and object key for the uploaded video.
-
-2. **Video Download**
-   - Upon receiving an event, the Inspector downloads the video file from S3 to a local working directory.
-
-3. **Scene Cut Detection**
-   - The Inspector invokes ffmpeg with the `select=gt(scene,0.8)` filter to detect scene changes.
-   - ffmpeg outputs timestamps for each detected scene cut.
-   - The Inspector parses these timestamps in real time.
-
-4. **Progress Streaming**
-   - As ffmpeg processes the video, the Inspector calculates and streams progress updates to the frontend using SSE.
-   - Progress is based on the current timestamp processed vs. the total video duration.
-
-5. **Metadata & Scene Cut Storage**
-   - After analysis, the Inspector stores video metadata (filename, upload date, thumbnail, etc.) and the list of scene cut timestamps in PostgreSQL.
-
-6. **Duplicate Detection**
-   - The Inspector queries the database for videos with similar or matching scene cut patterns.
-   - If a duplicate or near-duplicate is found, the analysis can be stopped early and the result is reported to the frontend.
-
-### Example: ffmpeg Scene Cut Command
-
-```bash
-ffmpeg -i input.mp4 -filter_complex "select='gt(scene,0.8)',showinfo" -f null -
-```
-
-- `select='gt(scene,0.8)'`: Detects scene changes with a threshold of 0.8.
-- `showinfo`: Outputs frame and timestamp info for parsing.
-
-### Inspector Pipeline Diagram (ASCII art)
-
-```
-+-------------+
-| SQS Event   |
-+-------------+
-      |
-      v
-+-------------------+
-| Download from S3  |
-+-------------------+
-      |
-      v
-+-----------------------------+
-| Run ffmpeg Scene Detection   |
-+-----------------------------+
-      |
-      v
-+-------------------+
-| Parse Timestamps  |
-+-------------------+
-      |
-      +-------------------+
-      |                   |
-      v                   v
-+-------------------+   +-------------------+
-| Stream Progress   |   | Store Metadata    |
-| via SSE           |   | in PostgreSQL     |
-+-------------------+   +-------------------+
-                              |
-                              v
-                      +-------------------+
-                      | Duplicate         |
-                      | Detection         |
-                      +-------------------+
-                              |
-                 +------------+------------+
-                 |                         |
-                 v                         v
-      +-------------------+     +-------------------+
-      | Report to         |     | Continue          |
-      | Frontend & Stop   |     | Analysis          |
-      +-------------------+     +-------------------+
+    SQS --> DL --> FFMPEG --> PARSE
+    PARSE --> SSE
+    PARSE --> META --> DUP
+    DUP -- If duplicate --> STOP
+    DUP -- If unique --> CONT
 ```
 
 ---
@@ -415,66 +338,30 @@ function DuplicateInfo({ duplicate }) {
 
 ---
 
-## Architectural Decisions & Suggestions
+## Frontend Architecture
 
-### Why React?
-- **Component model** fits well with the modular nature of the UI (upload, progress, results, duplicates).
-- **Ecosystem:** Rich ecosystem for state management, routing, and UI libraries.
-- **Real-time updates:** React’s state model works seamlessly with SSE and other streaming APIs.
+```mermaid
+graph TD
+    USER[User]
+    UPLOAD[Upload Component]
+    S3[S3 Bucket]
+    INSPECTOR[Inspector Backend]
+    PROGRESS[Progress Component]
+    SCENECUTS[SceneCuts Component]
+    DUPINFO[DuplicateInfo Component]
+    PBAR[Progress Bar]
+    CUTLIST[Scene Cut List]
+    DUPALERT[Duplicate Alert]
 
-### State Management
-- For small/medium apps, React’s built-in state is sufficient.
-- For larger apps, consider **Redux** or **Zustand** for more complex state needs.
-
-### Error Handling
-- Display clear error messages for upload, analysis, and network issues.
-- Use error boundaries to catch rendering errors.
-
-### Testing
-- Use **Jest** and **React Testing Library** for unit and integration tests.
-- Mock SSE and backend responses for robust frontend tests.
-
-### Maintainability & Scalability
-- **Componentize** all major UI elements.
-- Use **TypeScript** for type safety (recommended for future growth).
-- **Document** all props and state transitions.
-
-### UX Best Practices
-- Provide **immediate feedback** on user actions.
-- Use **loading indicators** and **disable buttons** during async operations.
-- Ensure **mobile responsiveness**.
-
----
-
-## Frontend Architecture Diagram (ASCII art)
-
-```
-+-------+        +-------------------+
-| User  |----->  | Upload Component  |
-+-------+        +-------------------+
-                      |
-                      v
-                +-------------------+
-                |   S3 Bucket       |
-                +-------------------+
-                      |
-                      v
-                +-------------------+
-                | Inspector Backend |
-                +-------------------+
-                  |     |      |
-                  |     |      |
-                  v     v      v
-           +----------+ +----------+ +-------------------+
-           |Progress  | |SceneCuts | |DuplicateInfo      |
-           |Component | |Component | |Component          |
-           +----------+ +----------+ +-------------------+
-                  |         |               |
-                  v         v               v
-           +----------+ +----------+ +-------------------+
-           |Progress  | |Scene Cut | |Duplicate Alert    |
-           |Bar       | |List      | |                   |
-           +----------+ +----------+ +-------------------+
+    USER --> UPLOAD
+    UPLOAD --> S3
+    S3 --> INSPECTOR
+    INSPECTOR --> PROGRESS
+    INSPECTOR --> SCENECUTS
+    INSPECTOR --> DUPINFO
+    PROGRESS --> PBAR
+    SCENECUTS --> CUTLIST
+    DUPINFO --> DUPALERT
 ```
 
 ---
