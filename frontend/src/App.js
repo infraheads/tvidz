@@ -42,7 +42,9 @@ function App() {
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (file) {
-      uploadFile(file);
+      // Always use a unique filename to force S3 event
+      const uniqueFile = new File([file], `${Date.now()}-${file.name}`, { type: file.type });
+      uploadFile(uniqueFile);
     }
   };
 

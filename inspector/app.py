@@ -25,6 +25,7 @@ def status_stream_options(filename):
 
 # In-memory store for analysis results and progress
 analysis_results = {}
+analysis_lock = threading.Lock()
 
 @app.route('/notify', methods=['POST'])
 def notify():
@@ -43,28 +44,45 @@ def notify():
 
 @app.route('/status/<filename>', methods=['GET'])
 def status(filename):
-    result = analysis_results.get(filename)
+    with analysis_lock:
+        result = analysis_results.get(filename)
     if not result:
+        print(f"[status] No result in memory for {filename}")
         return jsonify({'status': 'pending'})
+    print(f"[status] Serving result from memory for {filename}")
     return jsonify(result)
 
 @app.route('/status/stream/<filename>')
 def status_stream(filename):
     def event_stream():
         last_status = None
+        last_progress = None
+        last_scene_cuts_len = None
         while True:
-            result = analysis_results.get(filename)
+            with analysis_lock:
+                result = analysis_results.get(filename)
             if not result:
                 status = 'pending'
+                progress = 0.0
+                scene_cuts_len = 0
             else:
                 status = result.get('status')
-            if status != last_status:
+                progress = result.get('progress', 0.0)
+                scene_cuts_len = len(result.get('scene_cuts', []))
+            # Yield if any of the tracked fields change
+            if (
+                status != last_status or
+                progress != last_progress or
+                scene_cuts_len != last_scene_cuts_len
+            ):
                 last_status = status
+                last_progress = progress
+                last_scene_cuts_len = scene_cuts_len
                 data = result if result else {'status': 'pending'}
                 yield f"data: {json.dumps(data)}\n\n"
                 if status in ('done', 'error'):
                     break
-            time.sleep(1)
+            time.sleep(0.5)
     response = Response(event_stream(), mimetype='text/event-stream')
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
@@ -73,10 +91,23 @@ def status_stream(filename):
 
 def analyze_file(bucket, key):
     import time
+    import subprocess
     filename = key.split('/')[-1]
-    analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0}
-    s3_url = f"http://localstack:4566/{bucket}/{key}"
     local_path = f"/tmp/{filename}"
+    # Ensure no stale result or file
+    with analysis_lock:
+        if filename in analysis_results:
+            del analysis_results[filename]
+    if os.path.exists(local_path):
+        try:
+            os.remove(local_path)
+            print(f"[cleanup] Removed stale file: {local_path}")
+        except Exception as e:
+            print(f"[cleanup] Failed to remove stale file: {local_path} ({e})")
+    print(f"[analysis-triggered] Starting analysis for {filename}")
+    with analysis_lock:
+        analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0}
+    s3_url = f"http://localstack:4566/{bucket}/{key}"
     try:
         # Retry logic for download
         max_retries = 5
@@ -90,7 +121,6 @@ def analyze_file(bucket, key):
             import ffmpeg
             try:
                 probe = ffmpeg.probe(local_path)
-                duration = float(probe['format']['duration'])
                 # Get total frame count using ffprobe
                 streams = probe.get('streams', [])
                 video_stream = next((s for s in streams if s.get('codec_type') == 'video'), None)
@@ -98,7 +128,6 @@ def analyze_file(bucket, key):
                     total_frames = int(video_stream['nb_frames'])
                 else:
                     # fallback: use ffprobe to count frames
-                    import subprocess
                     ffprobe_cmd = [
                         'ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0',
                         '-show_entries', 'stream=nb_read_frames', '-of', 'default=nokey=1:noprint_wrappers=1', local_path
@@ -111,66 +140,93 @@ def analyze_file(bucket, key):
                     time.sleep(1)
                 else:
                     raise Exception(f"File download incomplete or corrupt after {max_retries} attempts: {e}")
-        import subprocess
-        # Get video duration for progress estimation (already set above)
+        # 1. Run ffmpeg with -progress for real-time progress
+        progress_cmd = [
+            'ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-i', local_path,
+            '-f', 'null', '-',
+            '-progress', 'pipe:1'
+        ]
+        process = subprocess.Popen(progress_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        current_frame = 0
+        last_progress = 0.0
+        last_update_time = time.time()
+        for line in process.stdout:
+            now = time.time()
+            line = line.strip()
+            print(f"[ffmpeg-progress] {line}")  # DEBUG: log every ffmpeg progress line
+            if line.startswith('frame='):
+                try:
+                    current_frame = int(line.split('=')[1])
+                except Exception:
+                    pass
+            if total_frames > 0 and current_frame > 0:
+                progress = min(current_frame / total_frames, 1.0)
+            else:
+                progress = 0.0
+            # Emit update if progress increased or 0.5s passed
+            if (
+                progress > last_progress or
+                now - last_update_time > 0.5
+            ):
+                last_progress = progress
+                last_update_time = now
+                print(f"[progress-update] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames})")  # DEBUG: log progress updates
+                with analysis_lock:
+                    analysis_results[filename]['progress'] = progress
+            if line.startswith('progress=') and line.split('=')[1] == 'end':
+                break
+        process.wait()
+        # 2. Run ffmpeg for scene cut detection (as before)
         scene_cmd = [
-            'ffmpeg', '-i', local_path,
+            'ffmpeg', '-hide_banner', '-loglevel', 'info',
+            '-i', local_path,
             '-filter_complex', "select='gt(scene,0.3)',showinfo",
             '-f', 'null', '-'
         ]
-        process = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        process2 = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
         scene_timestamps = []
-        last_progress = 0.0
-        current_frame = 0
-        for line in process.stderr:
-            if 'showinfo' in line:
-                # Parse frame number
-                if 'n:' in line:
+        for line in process2.stderr:
+            if "showinfo" in line and "pts_time:" in line:
+                parts = line.split('pts_time:')
+                if len(parts) > 1:
                     try:
-                        n_part = line.split('n:')[1].split(' ')[0]
-                        frame_num = int(n_part)
-                        current_frame = frame_num
+                        ts = float(parts[1].split()[0])
+                        scene_timestamps.append(ts)
                     except Exception:
                         pass
-                # Parse scene cut timestamp
-                if 'pts_time:' in line:
-                    parts = line.split('pts_time:')
-                    if len(parts) > 1:
-                        try:
-                            ts = float(parts[1].split()[0])
-                            scene_timestamps.append(ts)
-                        except Exception:
-                            pass
-                # Update progress by frame
-                if total_frames > 0 and current_frame > 0:
-                    progress = min(current_frame / total_frames, 1.0)
-                    if progress > last_progress or len(scene_timestamps) == 1:
-                        last_progress = progress
-                        analysis_results[filename] = {
-                            'status': 'analyzing',
-                            'scene_cuts': scene_timestamps.copy(),
-                            'progress': progress,
-                            'total_cuts': 0  # Will set at the end
-                        }
-        process.wait()
-        analysis_results[filename] = {
-            'status': 'done',
-            'scene_cuts': scene_timestamps,
-            'progress': 1.0,
-            'total_cuts': len(scene_timestamps)
-        }
+        process2.wait()
+        with analysis_lock:
+            analysis_results[filename].update({
+                'status': 'done',
+                'scene_cuts': scene_timestamps,
+                'progress': 1.0,
+                'total_cuts': len(scene_timestamps)
+            })
+        print(f"[analysis-complete] Analysis done for {filename}, removing result from memory.")
+        with analysis_lock:
+            del analysis_results[filename]
     except Exception as e:
-        analysis_results[filename] = {
-            'status': 'error',
-            'error': str(e),
-            'progress': 0.0,
-            'total_cuts': 0
-        }
+        with analysis_lock:
+            analysis_results[filename] = {
+                'status': 'error',
+                'error': str(e),
+                'progress': 0.0,
+                'total_cuts': 0
+            }
+        print(f"[analysis-error] Analysis failed for {filename}, removing result from memory.")
+        with analysis_lock:
+            del analysis_results[filename]
     finally:
         if os.path.exists(local_path):
-            os.remove(local_path)
+            try:
+                os.remove(local_path)
+                print(f"[cleanup] Removed file after analysis: {local_path}")
+            except Exception as e:
+                print(f"[cleanup] Failed to remove file after analysis: {local_path} ({e})")
 
 def poll_sqs():
+    import botocore
     sqs = boto3.client(
         'sqs',
         region_name='us-east-1',
@@ -178,7 +234,17 @@ def poll_sqs():
         aws_access_key_id='test',
         aws_secret_access_key='test',
     )
-    queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+    queue_url = None
+    for attempt in range(10):
+        try:
+            queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+            break
+        except botocore.exceptions.ClientError as e:
+            print(f"Waiting for SQS queue to be available... (attempt {attempt+1})")
+            time.sleep(2)
+    if not queue_url:
+        print("Failed to get SQS queue URL after multiple attempts.")
+        return
     while True:
         resp = sqs.receive_message(
             QueueUrl=queue_url,
