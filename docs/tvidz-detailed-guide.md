@@ -69,54 +69,29 @@ The TVIDZ system is composed of several interconnected components:
 
 Below is a high-level architecture diagram:
 
-```
-User/Browser
-    |
-    v
-+-------------------+
-|  React Frontend   |
-+-------------------+
-    |
-    v
-+-------------------+
-|   S3 Bucket       |
-|   (LocalStack)    |
-+-------------------+
-    |
-    v
-+-------------------+
-|   SQS Queue       |
-|   (LocalStack)    |
-+-------------------+
-    |
-    v
-+------------------------+
-|   Inspector Backend    |
-+------------------------+
-    |           |           |
-    |           |           |
-    v           v           v
-+----------+ +----------+ +-------------------+
-|Download  | |Analyze   | |Store Metadata &   |
-|Video     | |Video     | |Scene Cuts         |
-+----------+ +----------+ +-------------------+
-    \           |           /
-     \          |          /
-      \         |         /
-       \        |        /
-        \       |       /
-         \      |      /
-          \     |     /
-           \    |    /
-            \   |   /
-             \  |  /
-              \ | /
-               \|/
-           +-------------------+
-           |   PostgreSQL      |
-           +-------------------+
+```mermaid
+graph TD
+    A[User/Browser]
+    B[React Frontend]
+    C[S3 Bucket (LocalStack)]
+    D[SQS Queue (LocalStack)]
+    E[Inspector Backend]
+    F[PostgreSQL]
+    G[Download Video]
+    H[Analyze Video]
+    I[Store Metadata & Scene Cuts]
 
-(Progress/results are streamed back from Inspector Backend to React Frontend.)
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> G
+    E --> H
+    E --> I
+    G --> F
+    H --> F
+    I --> F
+    E -- Progress/Results --> B
 ```
 
 Note: Only the Inspector Backend communicates with PostgreSQL. The React Frontend receives all data via the backend.
