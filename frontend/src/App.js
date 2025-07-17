@@ -29,6 +29,7 @@ function App() {
   const [analyzing, setAnalyzing] = useState(false);
   const [uploadDuration, setUploadDuration] = useState(null);
   const [analysisDuration, setAnalysisDuration] = useState(null);
+  const [duplicates, setDuplicates] = useState([]);
   const fileInputRef = useRef();
   const eventSourceRef = useRef();
   const uploadStartRef = useRef(null);
@@ -66,6 +67,9 @@ function App() {
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        if (data.duplicates && Array.isArray(data.duplicates) && data.duplicates.length > 0) {
+          setDuplicates(data.duplicates);
+        }
         if (data.status === "done") {
           setBarLabel("Analysis complete!");
           setSceneCuts((prev) => {
@@ -290,6 +294,14 @@ function App() {
                 </span>
               ))}
             </div>
+          </div>
+        )}
+        {duplicates.length > 0 && (
+          <div style={{ marginTop: 24, color: '#b71c1c', fontWeight: 600 }}>
+            Duplicate video(s) detected:<br />
+            {[...new Set(duplicates)].map((name, i) => (
+              <div key={i}>{name}</div>
+            ))}
           </div>
         )}
       </div>

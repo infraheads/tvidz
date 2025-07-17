@@ -7,6 +7,7 @@ import ffmpeg
 import json
 import boto3
 import base64
+from db import add_video, add_timestamps, update_duplicates, find_duplicates, get_video_by_filename, get_video_by_id
 
 app = Flask(__name__)
 
@@ -105,8 +106,11 @@ def analyze_file(bucket, key):
         except Exception as e:
             print(f"[cleanup] Failed to remove stale file: {local_path} ({e})")
     print(f"[analysis-triggered] Starting analysis for {filename}")
+    # Add video metadata to DB
+    video = add_video(filename)
+    video_id = video.id
     with analysis_lock:
-        analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0}
+        analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0, 'duplicates': []}
     s3_url = f"http://localstack:4566/{bucket}/{key}"
     try:
         # Retry logic for download
@@ -121,7 +125,6 @@ def analyze_file(bucket, key):
             import ffmpeg
             try:
                 probe = ffmpeg.probe(local_path)
-                # Get total frame count using ffprobe
                 streams = probe.get('streams', [])
                 video_stream = next((s for s in streams if s.get('codec_type') == 'video'), None)
                 if video_stream and 'nb_frames' in video_stream:
@@ -140,66 +143,81 @@ def analyze_file(bucket, key):
                     time.sleep(1)
                 else:
                     raise Exception(f"File download incomplete or corrupt after {max_retries} attempts: {e}")
-        # 1. Run ffmpeg with -progress for real-time progress
-        progress_cmd = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'error',
+        # Run ffmpeg for scene cut detection and progress in one process
+        scene_cmd = [
+            'stdbuf', '-oL', '-eL',
+            'ffmpeg', '-hide_banner', '-loglevel', 'info',
             '-i', local_path,
-            '-f', 'null', '-',
-            '-progress', 'pipe:1'
+            '-vf', 'select=gt(scene\,0.8),showinfo',
+            '-f', 'null', '-'
         ]
-        process = subprocess.Popen(progress_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        process = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        scene_timestamps = []
         current_frame = 0
         last_progress = 0.0
         last_update_time = time.time()
-        for line in process.stdout:
+        duplicate_found = False
+        dups_to_report = []
+        for line in process.stderr:
             now = time.time()
             line = line.strip()
-            print(f"[ffmpeg-progress] {line}")  # DEBUG: log every ffmpeg progress line
-            if line.startswith('frame='):
-                try:
-                    current_frame = int(line.split('=')[1])
-                except Exception:
-                    pass
+            if 'showinfo' in line:
+                # Parse frame number
+                if 'n:' in line:
+                    try:
+                        n_part = line.split('n:')[1].split(' ')[0]
+                        current_frame = int(n_part)
+                    except Exception:
+                        pass
+                # Parse scene cut timestamp
+                if 'pts_time:' in line:
+                    try:
+                        ts = float(line.split('pts_time:')[1].split()[0])
+                        if not scene_timestamps or ts != scene_timestamps[-1]:
+                            scene_timestamps.append(ts)
+                            # Incremental DB update and duplicate search
+                            add_timestamps(video_id, scene_timestamps)
+                            dups = find_duplicates(scene_timestamps, min_match=3)
+                            # Remove self from duplicates
+                            dups = [d for d in dups if d[0] != video_id]
+                            if dups and not duplicate_found:
+                                update_duplicates(video_id, [d[0] for d in dups])
+                                dups_to_report = [get_video_by_id(d[0]).filename for d in dups]
+                                duplicate_found = True
+                                print(f"[duplicate] Found duplicates: {dups}, stopping analysis early.")
+                                break
+                    except Exception:
+                        pass
+            # Update progress and scene cuts incrementally
             if total_frames > 0 and current_frame > 0:
                 progress = min(current_frame / total_frames, 1.0)
             else:
                 progress = 0.0
-            # Emit update if progress increased or 0.5s passed
             if (
                 progress > last_progress or
-                now - last_update_time > 0.5
+                now - last_update_time > 0.5 or
+                len(scene_timestamps) > len(analysis_results[filename]['scene_cuts'])
             ):
                 last_progress = progress
                 last_update_time = now
-                print(f"[progress-update] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames})")  # DEBUG: log progress updates
+                print(f"[progress-update] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames})")
                 with analysis_lock:
                     analysis_results[filename]['progress'] = progress
-            if line.startswith('progress=') and line.split('=')[1] == 'end':
+                    analysis_results[filename]['scene_cuts'] = scene_timestamps.copy()
+            if duplicate_found:
+                print(f"[progress-update-before-break] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames})")
+                with analysis_lock:
+                    analysis_results[filename]['progress'] = progress
+                    analysis_results[filename]['scene_cuts'] = scene_timestamps.copy()
                 break
         process.wait()
-        # 2. Run ffmpeg for scene cut detection (as before)
-        scene_cmd = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'info',
-            '-i', local_path,
-            '-vf', 'select=gt(scene\,0.4),showinfo',
-            '-f', 'null', '-'
-        ]
-        process2 = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
-        scene_timestamps = []
-        for line in process2.stderr:
-            if "showinfo" in line and "pts_time:" in line:
-                try:
-                    ts = float(line.split('pts_time:')[1].split()[0])
-                    scene_timestamps.append(ts)
-                except Exception:
-                    pass
-        process2.wait()
         with analysis_lock:
             analysis_results[filename] = {
                 'status': 'done',
                 'scene_cuts': scene_timestamps,
                 'progress': 1.0,
-                'total_cuts': len(scene_timestamps)
+                'total_cuts': len(scene_timestamps),
+                'duplicates': list(set(dups_to_report)) if dups_to_report else []
             }
     except Exception as e:
         with analysis_lock:
@@ -207,7 +225,8 @@ def analyze_file(bucket, key):
                 'status': 'error',
                 'error': str(e),
                 'progress': 0.0,
-                'total_cuts': 0
+                'total_cuts': 0,
+                'duplicates': []
             }
     finally:
         if os.path.exists(local_path):
@@ -216,6 +235,17 @@ def analyze_file(bucket, key):
                 print(f"[cleanup] Removed file: {local_path}")
             except Exception as e:
                 print(f"[cleanup] Failed to remove file: {local_path} ({e})")
+
+# Utility to clear the database (for development/testing)
+@app.route('/admin/clear-db', methods=['POST'])
+def clear_db():
+    from db import SessionLocal, Video, VideoTimestamps
+    session = SessionLocal()
+    session.query(VideoTimestamps).delete()
+    session.query(Video).delete()
+    session.commit()
+    session.close()
+    return jsonify({'status': 'cleared'})
 
 def poll_sqs():
     import botocore

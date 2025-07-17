@@ -38,12 +38,31 @@ services:
       - "5001:5000"
     depends_on:
       - localstack
+      - postgres
     environment:
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
       - AWS_DEFAULT_REGION=us-east-1
+      - POSTGRES_DB=tvidz
+      - POSTGRES_USER=tvidz
+      - POSTGRES_PASSWORD=tvidz
     networks:
       - default
 
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_DB: tvidz
+      POSTGRES_USER: tvidz
+      POSTGRES_PASSWORD: tvidz
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
 # volumes:
 #   localstack-tmp:
+volumes:
+  pgdata:
