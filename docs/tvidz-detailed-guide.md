@@ -260,3 +260,162 @@ WHERE timestamps @> ARRAY[1.23, 4.56, 7.89];
 ---
 
 *The next section will cover the frontend React application in similar depth.*
+
+# Frontend: React Application
+
+The frontend of TVIDZ is built with React, providing a responsive, real-time interface for video uploads, progress tracking, and results display. This section details the architectural decisions, implementation, and suggestions for further improvement.
+
+## 5.1 Upload Flow
+
+### Architectural Decisions
+- **Component-based Design:** The upload logic is encapsulated in a dedicated component, promoting reusability and separation of concerns.
+- **Direct-to-S3 Uploads:** Videos are uploaded directly from the browser to S3 (via LocalStack in development), minimizing backend load and latency.
+- **Unique Filenames:** To ensure S3 event emission and avoid caching issues, each upload uses a unique filename (e.g., UUID-based).
+
+### Example: Upload Component (React)
+```jsx
+import React, { useState } from 'react';
+
+function Upload({ onUpload }) {
+  const [file, setFile] = useState(null);
+  const handleChange = e => setFile(e.target.files[0]);
+  const handleUpload = async () => {
+    if (!file) return;
+    // Generate unique filename
+    const filename = `${Date.now()}-${file.name}`;
+    // Upload to S3 (presigned URL or direct, depending on setup)
+    // ...
+    onUpload(filename);
+  };
+  return (
+    <div>
+      <input type="file" onChange={handleChange} />
+      <button onClick={handleUpload}>Upload</button>
+    </div>
+  );
+}
+```
+
+### Suggestions
+- **Drag-and-drop support** for better UX.
+- **Progress feedback** during upload (not just analysis).
+- **File type/size validation** before upload.
+
+---
+
+## 5.2 Progress Bar & Real-Time Updates
+
+### Architectural Decisions
+- **Server-Sent Events (SSE):** The frontend uses SSE to receive real-time progress and analysis updates from the backend, ensuring low-latency feedback without polling.
+- **State Management:** Progress and results are managed in React state, allowing seamless UI updates.
+
+### Example: Progress Bar with SSE
+```jsx
+import React, { useEffect, useState } from 'react';
+
+function AnalysisProgress({ videoId }) {
+  const [progress, setProgress] = useState(0);
+  useEffect(() => {
+    const evtSource = new EventSource(`/progress/${videoId}`);
+    evtSource.onmessage = event => {
+      const data = JSON.parse(event.data);
+      setProgress(data.progress);
+    };
+    return () => evtSource.close();
+  }, [videoId]);
+  return <progress value={progress} max="100" />;
+}
+```
+
+### Suggestions
+- **Reconnect logic** for SSE in case of network interruptions.
+- **Visual cues** (e.g., spinner, color changes) for different analysis states.
+- **Accessibility:** Ensure progress bar is screen-reader friendly.
+
+---
+
+## 5.3 Scene Cut Display & Duplicate Info
+
+### Architectural Decisions
+- **Dynamic Rendering:** Scene cut timestamps and duplicate info are rendered as soon as they are received, providing immediate feedback.
+- **Componentization:** Scene cuts and duplicate info are displayed in separate, reusable components.
+
+### Example: Scene Cut List
+```jsx
+function SceneCuts({ cuts }) {
+  return (
+    <ul>
+      {cuts.map((t, i) => <li key={i}>{t.toFixed(2)}s</li>)}
+    </ul>
+  );
+}
+```
+
+### Example: Duplicate Info
+```jsx
+function DuplicateInfo({ duplicate }) {
+  if (!duplicate) return null;
+  return (
+    <div className="duplicate-alert">
+      Duplicate detected! Video: {duplicate.filename}, Uploaded: {duplicate.upload_date}
+    </div>
+  );
+}
+```
+
+### Suggestions
+- **Link to duplicate video** for user review.
+- **Thumbnail previews** for both current and duplicate videos.
+- **Export scene cuts** as CSV or JSON.
+
+---
+
+## Architectural Decisions & Suggestions
+
+### Why React?
+- **Component model** fits well with the modular nature of the UI (upload, progress, results, duplicates).
+- **Ecosystem:** Rich ecosystem for state management, routing, and UI libraries.
+- **Real-time updates:** React’s state model works seamlessly with SSE and other streaming APIs.
+
+### State Management
+- For small/medium apps, React’s built-in state is sufficient.
+- For larger apps, consider **Redux** or **Zustand** for more complex state needs.
+
+### Error Handling
+- Display clear error messages for upload, analysis, and network issues.
+- Use error boundaries to catch rendering errors.
+
+### Testing
+- Use **Jest** and **React Testing Library** for unit and integration tests.
+- Mock SSE and backend responses for robust frontend tests.
+
+### Maintainability & Scalability
+- **Componentize** all major UI elements.
+- Use **TypeScript** for type safety (recommended for future growth).
+- **Document** all props and state transitions.
+
+### UX Best Practices
+- Provide **immediate feedback** on user actions.
+- Use **loading indicators** and **disable buttons** during async operations.
+- Ensure **mobile responsiveness**.
+
+---
+
+## Frontend Architecture Diagram
+
+```mermaid
+graph TD;
+  A[User] -->|Selects File| B[Upload Component];
+  B -->|Uploads to S3| C[S3 Bucket];
+  C -->|Triggers| D[Inspector Backend];
+  D -->|Streams SSE| E[Progress Component];
+  D -->|Sends Results| F[SceneCuts Component];
+  D -->|Sends Duplicate Info| G[DuplicateInfo Component];
+  E -->|Updates| H[Progress Bar];
+  F -->|Displays| I[Scene Cut List];
+  G -->|Displays| J[Duplicate Alert];
+```
+
+---
+
+*The next section will cover cloud and LocalStack integration, including rationale and best practices.*
