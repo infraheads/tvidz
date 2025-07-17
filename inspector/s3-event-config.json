@@ -1,9 +1,0 @@
-{
-  "QueueConfigurations": [
-    {
-      "Id": "SendToSQS",
-      "QueueArn": "arn:aws:sqs:us-east-1:000000000000:video-events",
-      "Events": ["s3:ObjectCreated:*"]
-    }
-  ]
-} 
