@@ -1,0 +1,25 @@
+name: Integration Tests
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-**'
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Compose
+        run: |
+          docker-compose --version
+      - name: Build and start stack
+        run: |
+          docker-compose up -d --build
+      - name: Run integration tests
+        run: |
+          chmod +x ./integration-test.sh
+          ./integration-test.sh
+      - name: Tear down stack
+        if: always()
+        run: docker-compose down 
