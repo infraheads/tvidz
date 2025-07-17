@@ -10,16 +10,38 @@ done
 # Always create the S3 bucket (idempotent)
 awslocal --endpoint-url=http://localstack:4566 s3 mb s3://videos || true
 
-# Copy CORS config into the container if not present
-if [ ! -f /tmp/cors.json ]; then
-  cp /app/../cors.json /tmp/cors.json || cp /app/cors.json /tmp/cors.json || true
-fi
+# Generate CORS config inline
+cat > /tmp/cors.json <<EOF
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["*"],
+      "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+      "AllowedHeaders": ["*"],
+      "ExposeHeaders": ["ETag"]
+    }
+  ]
+}
+EOF
 
 # Apply CORS policy (idempotent)
 awslocal --endpoint-url=http://localstack:4566 s3api put-bucket-cors --bucket videos --cors-configuration file:///tmp/cors.json || true
 
+# Generate S3 event notification config inline
+cat > /tmp/s3-event-config.json <<EOF
+{
+  "QueueConfigurations": [
+    {
+      "Id": "SendToSQS",
+      "QueueArn": "arn:aws:sqs:us-east-1:000000000000:video-events",
+      "Events": ["s3:ObjectCreated:*"]
+    }
+  ]
+}
+EOF
+
 # Apply S3 event notification config for SQS
-awslocal --endpoint-url=http://localstack:4566 s3api put-bucket-notification-configuration --bucket videos --notification-configuration file:///app/../s3-event-config.json || awslocal --endpoint-url=http://localstack:4566 s3api put-bucket-notification-configuration --bucket videos --notification-configuration file:///app/s3-event-config.json || true
+awslocal --endpoint-url=http://localstack:4566 s3api put-bucket-notification-configuration --bucket videos --notification-configuration file:///tmp/s3-event-config.json || true
 
 # Start your Inspector app
 exec python app.py 

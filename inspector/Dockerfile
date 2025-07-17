@@ -14,9 +14,6 @@ RUN pip install awscli-local
 # Install Python linters
 RUN pip install ruff flake8
 
-COPY cors.json /app/cors.json
-COPY s3-event-config.json /app/s3-event-config.json
-
 ENV PYTHONUNBUFFERED=1
 
 COPY . .
