@@ -114,11 +114,16 @@ Download   Analyze   Store
 +-------------------+
 | React Frontend    |
 +-------------------+
-           |
-           |   Duplicate Detection
-           v
+
 +-------------------+
-| PostgreSQL        |
+|                   |
+|   PostgreSQL      |
+|                   |
++-------------------+
+^                   |
+|                   |
++-------------------+
+| Inspector Backend |
 +-------------------+
 ```
 
