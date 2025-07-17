@@ -67,7 +67,7 @@ The TVIDZ system is composed of several interconnected components:
 - **PostgreSQL:** Stores video metadata, scene cut timestamps, and duplicate references.
 - **Docker Compose:** Orchestrates all services for local and production environments.
 
-Below is a high-level architecture diagram (ASCII art):
+Below is a high-level architecture diagram:
 
 ```
 +-------------------+         +-------------------+
@@ -121,6 +121,8 @@ Download   Analyze   Store
 | PostgreSQL        |
 +-------------------+
 ```
+
+Note: Only the Inspector Backend communicates with PostgreSQL. The React Frontend receives all data via the backend.
 
 ---
 
