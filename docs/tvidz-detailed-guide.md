@@ -67,19 +67,59 @@ The TVIDZ system is composed of several interconnected components:
 - **PostgreSQL:** Stores video metadata, scene cut timestamps, and duplicate references.
 - **Docker Compose:** Orchestrates all services for local and production environments.
 
-Below is a high-level architecture diagram (to be expanded in the next section):
+Below is a high-level architecture diagram (ASCII art):
 
-```mermaid
-graph TD;
-  A[User/Browser] -->|Upload Video| B[React Frontend];
-  B -->|S3 Upload| C[S3 Bucket (LocalStack)];
-  C -->|S3 Event| D[SQS Queue (LocalStack)];
-  D -->|Poll Event| E[Inspector Backend];
-  E -->|Download Video| C;
-  E -->|Analyze Video| F[ffmpeg];
-  E -->|Store Metadata| G[PostgreSQL];
-  E -->|Stream Progress/Results| B;
-  G -->|Duplicate Detection| E;
+```
++-------------------+         +-------------------+
+|   User/Browser    |         |  React Frontend   |
++-------------------+         +-------------------+
+           |                           |
+           |   Upload Video            |
+           +-------------------------> |
+           |                           |
+           |        S3 Upload          |
+           | <------------------------+
+           v
++-------------------+
+| S3 Bucket         |
+|  (LocalStack)     |
++-------------------+
+           |
+           |   S3 Event
+           v
++-------------------+
+| SQS Queue         |
+|  (LocalStack)     |
++-------------------+
+           |
+           |   Poll Event
+           v
++-------------------+
+| Inspector Backend |
++-------------------+
+     |        |        |
+     |        |        |
+     |        |        |
+     v        v        v
+Download   Analyze   Store
+ Video     Video     Metadata
+  |         |         |
+  v         v         v
++-------------------+
+|   ffmpeg          |
++-------------------+
+           |
+           |   Stream Progress/Results
+           v
++-------------------+
+| React Frontend    |
++-------------------+
+           |
+           |   Duplicate Detection
+           v
++-------------------+
+| PostgreSQL        |
++-------------------+
 ```
 
 ---
@@ -135,18 +175,49 @@ ffmpeg -i input.mp4 -filter_complex "select='gt(scene,0.8)',showinfo" -f null -
 - `select='gt(scene,0.8)'`: Detects scene changes with a threshold of 0.8.
 - `showinfo`: Outputs frame and timestamp info for parsing.
 
-### Inspector Pipeline Diagram
+### Inspector Pipeline Diagram (ASCII art)
 
-```mermaid
-graph TD;
-  A[SQS Event] --> B[Download from S3];
-  B --> C[Run ffmpeg Scene Cut Detection];
-  C --> D[Parse Timestamps];
-  D --> E[Stream Progress via SSE];
-  D --> F[Store Metadata in PostgreSQL];
-  F --> G[Duplicate Detection];
-  G -->|If duplicate| H[Report to Frontend & Stop];
-  G -->|If unique| I[Continue Analysis];
+```
++-------------+
+| SQS Event   |
++-------------+
+      |
+      v
++-------------------+
+| Download from S3  |
++-------------------+
+      |
+      v
++-----------------------------+
+| Run ffmpeg Scene Detection   |
++-----------------------------+
+      |
+      v
++-------------------+
+| Parse Timestamps  |
++-------------------+
+      |
+      +-------------------+
+      |                   |
+      v                   v
++-------------------+   +-------------------+
+| Stream Progress   |   | Store Metadata    |
+| via SSE           |   | in PostgreSQL     |
++-------------------+   +-------------------+
+                              |
+                              v
+                      +-------------------+
+                      | Duplicate         |
+                      | Detection         |
+                      +-------------------+
+                              |
+                 +------------+------------+
+                 |                         |
+                 v                         v
+      +-------------------+     +-------------------+
+      | Report to         |     | Continue          |
+      | Frontend & Stop   |     | Analysis          |
+      +-------------------+     +-------------------+
 ```
 
 ---
@@ -401,19 +472,35 @@ function DuplicateInfo({ duplicate }) {
 
 ---
 
-## Frontend Architecture Diagram
+## Frontend Architecture Diagram (ASCII art)
 
-```mermaid
-graph TD;
-  A[User] -->|Selects File| B[Upload Component];
-  B -->|Uploads to S3| C[S3 Bucket];
-  C -->|Triggers| D[Inspector Backend];
-  D -->|Streams SSE| E[Progress Component];
-  D -->|Sends Results| F[SceneCuts Component];
-  D -->|Sends Duplicate Info| G[DuplicateInfo Component];
-  E -->|Updates| H[Progress Bar];
-  F -->|Displays| I[Scene Cut List];
-  G -->|Displays| J[Duplicate Alert];
+```
++-------+        +-------------------+
+| User  |----->  | Upload Component  |
++-------+        +-------------------+
+                      |
+                      v
+                +-------------------+
+                |   S3 Bucket       |
+                +-------------------+
+                      |
+                      v
+                +-------------------+
+                | Inspector Backend |
+                +-------------------+
+                  |     |      |
+                  |     |      |
+                  v     v      v
+           +----------+ +----------+ +-------------------+
+           |Progress  | |SceneCuts | |DuplicateInfo      |
+           |Component | |Component | |Component          |
+           +----------+ +----------+ +-------------------+
+                  |         |               |
+                  v         v               v
+           +----------+ +----------+ +-------------------+
+           |Progress  | |Scene Cut | |Duplicate Alert    |
+           |Bar       | |List      | |                   |
+           +----------+ +----------+ +-------------------+
 ```
 
 ---
