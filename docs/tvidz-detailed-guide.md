@@ -71,11 +71,11 @@ Below is a high-level architecture diagram:
 
 ```mermaid
 graph LR
-    A[User/Browser]
-    B[React Frontend]
-    C[S3 Bucket (LocalStack)]
-    D[SQS Queue (LocalStack)]
-    E[Inspector Backend]
+    A[User]
+    B[Frontend]
+    C[S3 Bucket]
+    D[SQS Queue]
+    E[Inspector]
     F[PostgreSQL]
 
     A --> B
@@ -86,7 +86,7 @@ graph LR
     E -- Progress/Results --> B
 ```
 
-Note: Only the Inspector Backend communicates with PostgreSQL. The React Frontend receives all data via the backend.
+Note: Only the Inspector communicates with PostgreSQL. The Frontend receives all data via the backend.
 
 ---
 
