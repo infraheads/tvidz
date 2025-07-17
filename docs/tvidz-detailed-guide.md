@@ -93,17 +93,28 @@ User/Browser
 +------------------------+
 |   Inspector Backend    |
 +------------------------+
-           |
-           v
-   +-----------------------------+
-   |  Download, Analyze, Store   |
-   |  Metadata & Scene Cuts      |
-   +-----------------------------+
-           |
-           v
-   +-------------------+
-   |   PostgreSQL      |
-   +-------------------+
+    |           |           |
+    |           |           |
+    v           v           v
++----------+ +----------+ +-------------------+
+|Download  | |Analyze   | |Store Metadata &   |
+|Video     | |Video     | |Scene Cuts         |
++----------+ +----------+ +-------------------+
+    \           |           /
+     \          |          /
+      \         |         /
+       \        |        /
+        \       |       /
+         \      |      /
+          \     |     /
+           \    |    /
+            \   |   /
+             \  |  /
+              \ | /
+               \|/
+           +-------------------+
+           |   PostgreSQL      |
+           +-------------------+
 
 (Progress/results are streamed back from Inspector Backend to React Frontend.)
 ```
