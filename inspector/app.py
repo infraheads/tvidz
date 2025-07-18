@@ -117,7 +117,11 @@ def analyze_file(bucket, key):
         max_retries = 5
         total_frames = 0
         for attempt in range(max_retries):
-            r = requests.get(s3_url, stream=True)
+            # Add a reasonable timeout and verify the HTTP status code so we do
+            # not silently write an error page (e.g. 404 HTML) to disk and pass
+            # it to ffmpeg later on.
+            r = requests.get(s3_url, stream=True, timeout=30)
+            r.raise_for_status()
             with open(local_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
@@ -151,7 +155,16 @@ def analyze_file(bucket, key):
             '-vf', 'select=gt(scene\,0.8),showinfo',
             '-f', 'null', '-'
         ]
-        process = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        # We never read ffmpeg's STDOUT in this pipeline, so piping it can fill the
+        # buffer and deadlock the process for large/verbose outputs. Redirect it
+        # to DEVNULL instead to avoid unnecessary buffering and potential hangs.
+        process = subprocess.Popen(
+            scene_cmd,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
         scene_timestamps = []
         current_frame = 0
         last_progress = 0.0

@@ -52,13 +52,17 @@ def add_timestamps(video_id, timestamps):
     try:
         ts_row = session.query(VideoTimestamps).filter_by(video_id=video_id).first()
         if ts_row:
-            # Update existing row
-            ts_row.timestamps = timestamps
+            # Skip database write if nothing has changed; this drastically
+            # reduces write-amplification when we receive hundreds of
+            # incremental progress updates containing the exact same list.
+            if ts_row.timestamps != timestamps:
+                ts_row.timestamps = timestamps
+                session.commit()
         else:
             # Insert new row
             ts_row = VideoTimestamps(video_id=video_id, timestamps=timestamps)
             session.add(ts_row)
-        session.commit()
+            session.commit()
     finally:
         session.close()
 

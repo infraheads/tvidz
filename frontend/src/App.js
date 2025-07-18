@@ -32,6 +32,16 @@ function App() {
   const [duplicates, setDuplicates] = useState([]);
   const fileInputRef = useRef();
   const eventSourceRef = useRef();
+  // Close any open SSE connection when the component unmounts to prevent
+  // memory leaks and background network activity.
+  React.useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+    };
+  }, []);
   const uploadStartRef = useRef(null);
   const analysisStartRef = useRef(null);
 
