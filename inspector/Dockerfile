@@ -2,6 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Capture build timestamp
+ARG BUILD_DATE
+ARG BUILD_TIME
+ARG GIT_COMMIT
+ENV BUILD_DATE=${BUILD_DATE}
+ENV BUILD_TIME=${BUILD_TIME}
+ENV GIT_COMMIT=${GIT_COMMIT}
+
 RUN apt-get update && apt-get install -y ffmpeg libssl-dev && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./

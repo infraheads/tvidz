@@ -298,6 +298,18 @@ def clear_db():
     session.close()
     return jsonify({'status': 'cleared'})
 
+@app.route('/build-info', methods=['GET'])
+def build_info():
+    """Return build information for both frontend and inspector"""
+    return jsonify({
+        'inspector': {
+            'build_date': os.environ.get('BUILD_DATE', 'unknown'),
+            'build_time': os.environ.get('BUILD_TIME', 'unknown'),
+            'git_commit': os.environ.get('GIT_COMMIT', 'unknown'),
+            'service': 'inspector'
+        }
+    })
+
 def poll_sqs():
     import botocore
     sqs = boto3.client(

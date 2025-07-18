@@ -19,7 +19,12 @@ services:
       - "/var/run/docker.sock:/var/run/docker.sock"
 
   frontend:
-    build: ./frontend
+    build: 
+      context: ./frontend
+      args:
+        - BUILD_DATE=${BUILD_DATE:-unknown}
+        - BUILD_TIME=${BUILD_TIME:-unknown}
+        - GIT_COMMIT=${GIT_COMMIT:-unknown}
     container_name: frontend
     ports:
       - "3000:3000"
@@ -32,7 +37,12 @@ services:
       - localstack
 
   inspector:
-    build: ./inspector
+    build: 
+      context: ./inspector
+      args:
+        - BUILD_DATE=${BUILD_DATE:-unknown}
+        - BUILD_TIME=${BUILD_TIME:-unknown}
+        - GIT_COMMIT=${GIT_COMMIT:-unknown}
     container_name: inspector
     ports:
       - "5001:5000"

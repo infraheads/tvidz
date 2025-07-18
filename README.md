@@ -41,8 +41,15 @@ tvidz/
 git clone <repository-url>
 cd tvidz
 
-# Build and start all services
+# Option 1: Quick start with build info
+./build-dev.sh
+
+# Option 2: Manual build and start
 docker-compose up -d --build
+
+# Option 3: Build with timestamps (build only)
+./build.sh
+docker-compose up -d
 ```
 
 ### 2. Access Services
@@ -86,6 +93,7 @@ docker-compose up -d --build
   - Real-time progress tracking via Server-Sent Events
   - Scene cut timestamp visualization
   - Duplicate detection alerts
+  - Build information display (shows when frontend and inspector were built)
 
 #### 🔍 **Inspector (Python)**
 - **Technology**: Flask, FFmpeg, SQLAlchemy, Boto3
@@ -167,10 +175,15 @@ python app.py  # Requires LocalStack and PostgreSQL
 
 ### Building Individual Services
 ```bash
-# Frontend only
-docker-compose build frontend
+# Build with timestamps using build scripts
+./build.sh        # Build only
+./build-dev.sh    # Build and start
 
-# Inspector only  
+# Manual builds
+BUILD_DATE=$(date +"%Y-%m-%d") BUILD_TIME=$(date +"%H:%M:%S %Z") GIT_COMMIT=$(git rev-parse --short HEAD) docker-compose build
+
+# Individual services
+docker-compose build frontend
 docker-compose build inspector
 
 # Start specific services
@@ -227,6 +240,21 @@ Get current analysis status for a video file.
 Server-Sent Events stream for real-time progress updates.
 
 **Event Data:** Same format as status endpoint, streamed in real-time.
+
+#### GET `/build-info`
+Get build information for the inspector service.
+
+**Response:**
+```json
+{
+  "inspector": {
+    "build_date": "2024-01-15",
+    "build_time": "14:30:25 UTC",
+    "git_commit": "abc1234",
+    "service": "inspector"
+  }
+}
+```
 
 #### POST `/notify`
 Webhook endpoint for S3 event notifications (internal use).

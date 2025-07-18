@@ -30,6 +30,8 @@ function App() {
   const [uploadDuration, setUploadDuration] = useState(null);
   const [analysisDuration, setAnalysisDuration] = useState(null);
   const [duplicates, setDuplicates] = useState([]);
+  const [buildInfo, setBuildInfo] = useState(null);
+  const [showBuildInfo, setShowBuildInfo] = useState(false);
   const fileInputRef = useRef();
   const eventSourceRef = useRef();
   const uploadStartRef = useRef(null);
@@ -39,6 +41,47 @@ function App() {
     fileInputRef.current.value = null; // Always reset
     fileInputRef.current.click();
   };
+
+  const fetchBuildInfo = async () => {
+    try {
+      const response = await fetch(`${INSPECTOR_URL}/build-info`);
+      const data = await response.json();
+      
+      // Combine frontend and inspector build info
+      const frontendInfo = {
+        build_date: process.env.REACT_APP_BUILD_DATE || 'unknown',
+        build_time: process.env.REACT_APP_BUILD_TIME || 'unknown',
+        git_commit: process.env.REACT_APP_GIT_COMMIT || 'unknown',
+        service: 'frontend'
+      };
+      
+      setBuildInfo({
+        frontend: frontendInfo,
+        inspector: data.inspector
+      });
+    } catch (error) {
+      console.error('Failed to fetch build info:', error);
+      setBuildInfo({
+        frontend: {
+          build_date: process.env.REACT_APP_BUILD_DATE || 'unknown',
+          build_time: process.env.REACT_APP_BUILD_TIME || 'unknown',
+          git_commit: process.env.REACT_APP_GIT_COMMIT || 'unknown',
+          service: 'frontend'
+        },
+        inspector: {
+          build_date: 'unknown',
+          build_time: 'unknown',
+          git_commit: 'unknown',
+          service: 'inspector'
+        }
+      });
+    }
+  };
+
+  // Fetch build info on component mount
+  React.useEffect(() => {
+    fetchBuildInfo();
+  }, []);
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];
@@ -303,6 +346,46 @@ function App() {
             ))}
           </div>
         )}
+        
+        {/* Build Info Toggle */}
+        <div style={{ marginTop: 32, borderTop: '1px solid #e0e0e0', paddingTop: 16 }}>
+          <button
+            onClick={() => setShowBuildInfo(!showBuildInfo)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#666',
+              fontSize: 14,
+              cursor: 'pointer',
+              textDecoration: 'underline'
+            }}
+          >
+            {showBuildInfo ? 'Hide' : 'Show'} Build Information
+          </button>
+          
+          {showBuildInfo && buildInfo && (
+            <div style={{ 
+              marginTop: 12, 
+              fontSize: 12, 
+              color: '#666',
+              fontFamily: 'monospace',
+              background: '#f8f8f8',
+              padding: 12,
+              borderRadius: 6,
+              border: '1px solid #e0e0e0'
+            }}>
+              <div style={{ marginBottom: 8, fontWeight: 600 }}>Frontend Build:</div>
+              <div>Date: {buildInfo.frontend.build_date}</div>
+              <div>Time: {buildInfo.frontend.build_time}</div>
+              <div>Commit: {buildInfo.frontend.git_commit}</div>
+              
+              <div style={{ marginTop: 12, marginBottom: 8, fontWeight: 600 }}>Inspector Build:</div>
+              <div>Date: {buildInfo.inspector.build_date}</div>
+              <div>Time: {buildInfo.inspector.build_time}</div>
+              <div>Commit: {buildInfo.inspector.git_commit}</div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
