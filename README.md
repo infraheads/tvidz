@@ -262,6 +262,20 @@ Webhook endpoint for S3 event notifications (internal use).
 #### POST `/admin/clear-db`
 Development endpoint to clear all database records.
 
+#### GET `/debug/videos`
+Debug endpoint to view all videos and their timestamps in the database.
+
+#### POST `/debug/create-test-video`
+Create a test video with predefined timestamps for duplicate testing.
+
+**Request Body:**
+```json
+{
+  "filename": "test_video.mp4",
+  "timestamps": [1.2, 5.7, 12.3, 18.9, 25.1]
+}
+```
+
 ## 🎬 Video Analysis Process
 
 ### Scene Cut Detection
@@ -273,10 +287,12 @@ Development endpoint to clear all database records.
 6. **Early Termination**: Stops analysis when duplicates found
 
 ### Duplicate Detection Algorithm
-- **Threshold**: Minimum 3 matching scene cut timestamps
-- **Comparison**: Exact float timestamp matching
+- **Threshold**: Minimum 2 matching scene cut timestamps
+- **Comparison**: Tolerance-based matching (0.1 second precision)
+- **Scene Detection**: Lowered threshold (0.3) for more sensitive detection
 - **Performance**: Incremental checking during analysis
 - **Optimization**: Analysis stops early when duplicates detected
+- **Debug**: Enhanced logging and debug endpoints available
 
 ## 🔍 Troubleshooting
 

@@ -189,7 +189,7 @@ def analyze_file(bucket, key):
             'stdbuf', '-oL', '-eL',
             'ffmpeg', '-hide_banner', '-loglevel', 'info',
             '-i', local_path,
-            '-vf', 'select=gt(scene\\,0.8),showinfo',
+            '-vf', 'select=gt(scene\\,0.3),showinfo',  # Lower threshold for more scene cuts
             '-f', 'null', '-'
         ]
         process = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
@@ -218,14 +218,20 @@ def analyze_file(bucket, key):
                             scene_timestamps.append(ts)
                             # Incremental DB update and duplicate search
                             add_timestamps(video_id, scene_timestamps)
-                            dups = find_duplicates(scene_timestamps, min_match=3)
+                            dups = find_duplicates(scene_timestamps, min_match=2)  # Lower threshold for better detection
                             # Remove self from duplicates
                             dups = [d for d in dups if d[0] != video_id]
                             if dups and not duplicate_found:
                                 update_duplicates(video_id, [d[0] for d in dups])
-                                dups_to_report = [get_video_by_id(d[0]).filename for d in dups]
+                                dups_to_report = []
+                                for dup_id, match_count in dups:
+                                    dup_video = get_video_by_id(dup_id)
+                                    if dup_video:
+                                        dups_to_report.append(dup_video.filename)
+                                        print(f"[duplicate] Match found: {dup_video.filename} ({match_count} matching timestamps)")
                                 duplicate_found = True
-                                print(f"[duplicate] Found duplicates: {dups}, stopping analysis early.")
+                                print(f"[duplicate] Found {len(dups_to_report)} duplicates: {dups_to_report}")
+                                print(f"[duplicate] Current scene cuts: {scene_timestamps}")
                                 break
                     except Exception:
                         pass
@@ -309,6 +315,45 @@ def build_info():
             'service': 'inspector'
         }
     })
+
+@app.route('/debug/videos', methods=['GET'])
+def debug_videos():
+    """Debug endpoint to see all videos and their timestamps"""
+    from db import SessionLocal, Video, VideoTimestamps
+    session = SessionLocal()
+    try:
+        videos = session.query(Video).all()
+        result = []
+        for video in videos:
+            timestamps = session.query(VideoTimestamps).filter_by(video_id=video.id).first()
+            result.append({
+                'id': video.id,
+                'filename': video.filename,
+                'upload_time': video.upload_time.isoformat() if video.upload_time else None,
+                'duplicates': video.duplicates,
+                'timestamps': timestamps.timestamps if timestamps else []
+            })
+        return jsonify({'videos': result, 'count': len(result)})
+    finally:
+        session.close()
+
+@app.route('/debug/create-test-video', methods=['POST'])
+def create_test_video():
+    """Create a test video with predefined timestamps for duplicate testing"""
+    test_filename = request.json.get('filename', 'test_video.mp4')
+    test_timestamps = request.json.get('timestamps', [1.2, 5.7, 12.3, 18.9, 25.1])
+    
+    try:
+        video = add_video(test_filename)
+        add_timestamps(video.id, test_timestamps)
+        return jsonify({
+            'status': 'created',
+            'video_id': video.id,
+            'filename': test_filename,
+            'timestamps': test_timestamps
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 def poll_sqs():
     import botocore

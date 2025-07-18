@@ -112,6 +112,7 @@ function App() {
         const data = JSON.parse(event.data);
         // Always update duplicates if present
         if (data.duplicates && Array.isArray(data.duplicates)) {
+          console.log('Duplicates received:', data.duplicates);
           setDuplicates(data.duplicates);
         }
         
