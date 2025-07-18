@@ -40,11 +40,27 @@ def add_video(filename, thumbnail_path=None):
     return video
 
 def add_timestamps(video_id, timestamps):
+    """
+    Insert or update the timestamps for a given video.  
+    The previous implementation inserted a new `VideoTimestamps` row **every** time
+    scene-cut progress was reported, which quickly produced dozens of duplicate
+    rows for the same video and wasted storage. Now we first look up an existing
+    row for the `video_id` and update it in-place if it exists, falling back to
+    an insert only when the video has not been seen before.
+    """
     session = SessionLocal()
-    ts = VideoTimestamps(video_id=video_id, timestamps=timestamps)
-    session.add(ts)
-    session.commit()
-    session.close()
+    try:
+        ts_row = session.query(VideoTimestamps).filter_by(video_id=video_id).first()
+        if ts_row:
+            # Update existing row
+            ts_row.timestamps = timestamps
+        else:
+            # Insert new row
+            ts_row = VideoTimestamps(video_id=video_id, timestamps=timestamps)
+            session.add(ts_row)
+        session.commit()
+    finally:
+        session.close()
 
 def update_duplicates(video_id, duplicate_ids):
     session = SessionLocal()
