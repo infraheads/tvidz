@@ -32,12 +32,14 @@ Base.metadata.create_all(engine)
 
 def add_video(filename, thumbnail_path=None):
     session = SessionLocal()
-    video = Video(filename=filename, thumbnail_path=thumbnail_path)
-    session.add(video)
-    session.commit()
-    session.refresh(video)
-    session.close()
-    return video
+    try:
+        video = Video(filename=filename, thumbnail_path=thumbnail_path)
+        session.add(video)
+        session.commit()
+        session.refresh(video)
+        return video
+    finally:
+        session.close()
 
 def add_timestamps(video_id, timestamps):
     """
@@ -64,35 +66,43 @@ def add_timestamps(video_id, timestamps):
 
 def update_duplicates(video_id, duplicate_ids):
     session = SessionLocal()
-    video = session.query(Video).filter_by(id=video_id).first()
-    if video:
-        video.duplicates = duplicate_ids
-        session.commit()
-    session.close()
+    try:
+        video = session.query(Video).filter_by(id=video_id).first()
+        if video:
+            video.duplicates = duplicate_ids
+            session.commit()
+    finally:
+        session.close()
 
 def find_duplicates(new_timestamps, min_match=3):
     """
     Returns a list of (video_id, match_count) for videos whose timestamps contain at least min_match elements of new_timestamps.
     """
     session = SessionLocal()
-    candidates = session.query(VideoTimestamps).all()
-    results = []
-    for cand in candidates:
-        # Count how many timestamps match (exact float match)
-        match_count = len(set(cand.timestamps) & set(new_timestamps))
-        if match_count >= min_match:
-            results.append((cand.video_id, match_count))
-    session.close()
-    return results
+    try:
+        candidates = session.query(VideoTimestamps).all()
+        results = []
+        for cand in candidates:
+            # Count how many timestamps match (exact float match)
+            match_count = len(set(cand.timestamps) & set(new_timestamps))
+            if match_count >= min_match:
+                results.append((cand.video_id, match_count))
+        return results
+    finally:
+        session.close()
 
 def get_video_by_id(video_id):
     session = SessionLocal()
-    video = session.query(Video).filter_by(id=video_id).first()
-    session.close()
-    return video
+    try:
+        video = session.query(Video).filter_by(id=video_id).first()
+        return video
+    finally:
+        session.close()
 
 def get_video_by_filename(filename):
     session = SessionLocal()
-    video = session.query(Video).filter_by(filename=filename).first()
-    session.close()
-    return video 
+    try:
+        video = session.query(Video).filter_by(filename=filename).first()
+        return video
+    finally:
+        session.close() 

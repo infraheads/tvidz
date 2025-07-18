@@ -46,7 +46,15 @@ def notify():
 @app.route('/status/<filename>', methods=['GET'])
 def status(filename):
     with analysis_lock:
-        result = analysis_results.get(filename)
+        # Look for results by original filename across all analysis keys
+        result = None
+        for key, data in analysis_results.items():
+            if data.get('original_filename') == filename:
+                result = data
+                break
+        # Fallback to direct lookup for backward compatibility
+        if not result:
+            result = analysis_results.get(filename)
     if not result:
         print(f"[status] No result in memory for {filename}")
         return jsonify({'status': 'pending'})
@@ -61,7 +69,15 @@ def status_stream(filename):
         last_scene_cuts_len = None
         while True:
             with analysis_lock:
-                result = analysis_results.get(filename)
+                # Look for results by original filename across all analysis keys
+                result = None
+                for key, data in analysis_results.items():
+                    if data.get('original_filename') == filename:
+                        result = data
+                        break
+                # Fallback to direct lookup for backward compatibility
+                if not result:
+                    result = analysis_results.get(filename)
             if not result:
                 status = 'pending'
                 progress = 0.0
@@ -93,12 +109,17 @@ def status_stream(filename):
 def analyze_file(bucket, key):
     import time
     import subprocess
+    import uuid
     filename = key.split('/')[-1]
-    local_path = f"/tmp/{filename}"
-    # Ensure no stale result or file
+    # Create a unique identifier to prevent race conditions with same filename
+    unique_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    local_path = f"/tmp/{unique_id}_{filename}"
+    analysis_key = f"{unique_id}_{filename}"
+    
+    # Ensure no stale result or file for this specific analysis
     with analysis_lock:
-        if filename in analysis_results:
-            del analysis_results[filename]
+        if analysis_key in analysis_results:
+            del analysis_results[analysis_key]
     if os.path.exists(local_path):
         try:
             os.remove(local_path)
@@ -110,7 +131,7 @@ def analyze_file(bucket, key):
     video = add_video(filename)
     video_id = video.id
     with analysis_lock:
-        analysis_results[filename] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0, 'duplicates': []}
+        analysis_results[analysis_key] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0, 'duplicates': [], 'original_filename': filename}
     s3_url = f"http://localstack:4566/{bucket}/{key}"
     try:
         # Retry logic for download
@@ -144,11 +165,15 @@ def analyze_file(bucket, key):
                 else:
                     raise Exception(f"File download incomplete or corrupt after {max_retries} attempts: {e}")
         # Run ffmpeg for scene cut detection and progress in one process
+        # Validate local_path to prevent command injection
+        if not os.path.exists(local_path) or not local_path.startswith('/tmp/'):
+            raise Exception(f"Invalid or unsafe file path: {local_path}")
+        
         scene_cmd = [
             'stdbuf', '-oL', '-eL',
             'ffmpeg', '-hide_banner', '-loglevel', 'info',
             '-i', local_path,
-            '-vf', 'select=gt(scene\,0.8),showinfo',
+            '-vf', 'select=gt(scene\\,0.8),showinfo',
             '-f', 'null', '-'
         ]
         process = subprocess.Popen(scene_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
@@ -196,37 +221,39 @@ def analyze_file(bucket, key):
             if (
                 progress > last_progress or
                 now - last_update_time > 0.5 or
-                len(scene_timestamps) > len(analysis_results[filename]['scene_cuts'])
+                len(scene_timestamps) > len(analysis_results[analysis_key]['scene_cuts'])
             ):
                 last_progress = progress
                 last_update_time = now
                 print(f"[progress-update] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames})")
                 with analysis_lock:
-                    analysis_results[filename]['progress'] = progress
-                    analysis_results[filename]['scene_cuts'] = scene_timestamps.copy()
+                    analysis_results[analysis_key]['progress'] = progress
+                    analysis_results[analysis_key]['scene_cuts'] = scene_timestamps.copy()
             if duplicate_found:
                 print(f"[progress-update-before-break] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames})")
                 with analysis_lock:
-                    analysis_results[filename]['progress'] = progress
-                    analysis_results[filename]['scene_cuts'] = scene_timestamps.copy()
+                    analysis_results[analysis_key]['progress'] = progress
+                    analysis_results[analysis_key]['scene_cuts'] = scene_timestamps.copy()
                 break
         process.wait()
         with analysis_lock:
-            analysis_results[filename] = {
+            analysis_results[analysis_key] = {
                 'status': 'done',
                 'scene_cuts': scene_timestamps,
                 'progress': 1.0,
                 'total_cuts': len(scene_timestamps),
-                'duplicates': list(set(dups_to_report)) if dups_to_report else []
+                'duplicates': list(set(dups_to_report)) if dups_to_report else [],
+                'original_filename': filename
             }
     except Exception as e:
         with analysis_lock:
-            analysis_results[filename] = {
+            analysis_results[analysis_key] = {
                 'status': 'error',
                 'error': str(e),
                 'progress': 0.0,
                 'total_cuts': 0,
-                'duplicates': []
+                'duplicates': [],
+                'original_filename': filename
             }
     finally:
         if os.path.exists(local_path):
