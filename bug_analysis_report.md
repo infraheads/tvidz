@@ -1,7 +1,7 @@
 # Bug Analysis Report for TVIDZ Codebase
 
 ## Summary
-This report documents five critical bugs identified and fixed in the TVIDZ video duplicate detection system. The bugs range from security vulnerabilities to resource management issues, race conditions, initialization logic errors, and input validation issues.
+This report documents eight critical bugs identified and fixed in the TVIDZ video duplicate detection system. The bugs range from security vulnerabilities to resource management issues, race conditions, initialization logic errors, input validation issues, and frontend UI/UX problems.
 
 ---
 
@@ -281,6 +281,124 @@ def analyze_file(bucket, key):
 
 ---
 
+## Bug #6: Duplicate Detection Not Updating in Real-Time
+
+### **Severity**: HIGH (Feature Functionality Issue)
+### **Location**: `inspector/app.py`, analysis progress updates
+### **Type**: Logic Error - Real-time Updates
+
+### **Description**
+The duplicate detection system was not updating the analysis results with found duplicates until the very end of the analysis process. This meant users wouldn't see duplicate alerts during real-time streaming, reducing the effectiveness of the early termination feature.
+
+### **Root Cause**
+- Duplicates were only stored in local variables during analysis
+- Analysis results were not updated with duplicates until completion
+- SSE stream didn't track duplicate changes
+
+### **Vulnerable Code**
+```python
+# Duplicates found but not stored in analysis_results
+if dups and not duplicate_found:
+    dups_to_report = [get_video_by_id(d[0]).filename for d in dups]
+    duplicate_found = True
+    break  # Analysis ends but duplicates not in results yet
+```
+
+### **Fix Applied**
+Updated analysis results immediately when duplicates are detected:
+
+### **Fixed Code**
+```python
+with analysis_lock:
+    analysis_results[analysis_key]['progress'] = progress
+    analysis_results[analysis_key]['scene_cuts'] = scene_timestamps.copy()
+    # Update duplicates in real-time if found
+    if dups_to_report:
+        analysis_results[analysis_key]['duplicates'] = list(set(dups_to_report))
+```
+
+---
+
+## Bug #7: Scene Cut Timestamps Not Displaying Correctly
+
+### **Severity**: MEDIUM (UI/UX Issue)
+### **Location**: `frontend/src/App.js`, SSE message handling
+### **Type**: Frontend Logic Error
+
+### **Description**
+Scene cut timestamps were not displaying correctly in the frontend due to overly complex append logic that prevented proper updates when the complete scene cuts array was received from the backend.
+
+### **Root Cause**
+- Complex append-only logic for scene cuts updates
+- Frontend tried to merge arrays instead of replacing them
+- SSE updates weren't properly triggering UI re-renders for scene cuts
+
+### **Vulnerable Code**
+```javascript
+setSceneCuts((prev) => {
+  if (!Array.isArray(data.scene_cuts)) return prev;
+  if (data.scene_cuts.length > prev.length) {
+    return [...prev, ...data.scene_cuts.slice(prev.length)];
+  }
+  return prev;  // No update if length hasn't changed
+});
+```
+
+### **Fix Applied**
+Simplified to direct assignment for more reliable updates:
+
+### **Fixed Code**
+```javascript
+// Always update scene cuts if present
+if (data.scene_cuts && Array.isArray(data.scene_cuts)) {
+  setSceneCuts(data.scene_cuts);  // Direct assignment
+}
+```
+
+---
+
+## Bug #8: Analysis Progress Bar Not Updating Dynamically
+
+### **Severity**: MEDIUM (UI/UX Issue)
+### **Location**: `inspector/app.py`, SSE stream conditions
+### **Type**: Performance - Update Frequency
+
+### **Description**
+The analysis progress bar was not updating smoothly because the SSE stream had overly restrictive conditions for sending updates. Progress changes smaller than exact floating-point matches were ignored, and the update frequency was too slow for smooth user experience.
+
+### **Root Cause**
+- Exact floating-point comparison for progress changes
+- Too infrequent SSE updates (0.5s intervals)
+- Missing tracking of duplicate detection changes
+- No threshold for meaningful progress changes
+
+### **Vulnerable Code**
+```python
+# Only updates on exact progress match
+if (status != last_status or 
+    progress != last_progress or  # Exact match required
+    scene_cuts_len != last_scene_cuts_len):
+    # Send update
+    time.sleep(0.5)  # Too slow for smooth updates
+```
+
+### **Fix Applied**
+Implemented threshold-based progress tracking with more frequent updates:
+
+### **Fixed Code**
+```python
+# More sensitive progress tracking
+progress_changed = last_progress is None or abs(progress - last_progress) >= 0.01
+if (status != last_status or
+    progress_changed or  # 1% threshold
+    scene_cuts_len != last_scene_cuts_len or
+    duplicates_len != last_duplicates_len):  # Track duplicates too
+    # Send update
+    time.sleep(0.2)  # More frequent updates
+```
+
+---
+
 ## Impact Assessment
 
 ### **Before Fixes**
@@ -289,6 +407,9 @@ def analyze_file(bucket, key):
 - **Data Loss**: Concurrent analysis of same-named files could corrupt results
 - **Service Startup Issues**: SQS initialization failures causing service instability
 - **Application Crashes**: Malformed S3 keys could cause IndexError exceptions
+- **Poor User Experience**: Duplicate detection not visible until analysis completion
+- **Missing UI Elements**: Scene cut timestamps not displaying properly
+- **Unresponsive Interface**: Progress bar not updating smoothly during analysis
 
 ### **After Fixes**
 - **Enhanced Security**: Input validation prevents command injection
@@ -296,6 +417,9 @@ def analyze_file(bucket, key):
 - **Data Integrity**: Unique analysis keys prevent race conditions
 - **Stable Initialization**: Robust SQS queue creation and initialization process
 - **Defensive Programming**: Safe string parsing prevents crashes from malformed input
+- **Real-time Feedback**: Immediate duplicate detection and user notification
+- **Complete UI**: All analysis data properly displayed to users
+- **Smooth Experience**: Responsive progress tracking with 1% precision updates
 
 ## Recommendations for Future Development
 

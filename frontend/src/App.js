@@ -67,19 +67,18 @@ function App() {
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.duplicates && Array.isArray(data.duplicates) && data.duplicates.length > 0) {
+        // Always update duplicates if present
+        if (data.duplicates && Array.isArray(data.duplicates)) {
           setDuplicates(data.duplicates);
         }
+        
+        // Always update scene cuts if present
+        if (data.scene_cuts && Array.isArray(data.scene_cuts)) {
+          setSceneCuts(data.scene_cuts);  // Use direct assignment instead of complex append logic
+        }
+        
         if (data.status === "done") {
           setBarLabel("Analysis complete!");
-          setSceneCuts((prev) => {
-            // Only append new scene cuts if any
-            if (!Array.isArray(data.scene_cuts)) return prev;
-            if (data.scene_cuts.length > prev.length) {
-              return [...prev, ...data.scene_cuts.slice(prev.length)];
-            }
-            return prev;
-          });
           setAnalysisProgress(100);
           setAnalyzing(false);
           if (analysisStartRef.current) {
@@ -88,14 +87,14 @@ function App() {
           }
           es.close();
         } else if (data.status === "analyzing") {
-          setBarLabel("Analyzing...");
-          setSceneCuts((prev) => {
-            if (!Array.isArray(data.scene_cuts)) return prev;
-            if (data.scene_cuts.length > prev.length) {
-              return [...prev, ...data.scene_cuts.slice(prev.length)];
-            }
-            return prev;
-          });
+          // Update bar label based on duplicate detection
+          if (data.duplicates && data.duplicates.length > 0) {
+            setBarLabel("Duplicate detected! Finishing analysis...");
+          } else {
+            setBarLabel("Analyzing...");
+          }
+          
+          // Update progress
           setAnalysisProgress(
             typeof data.progress === 'number' && isFinite(data.progress)
               ? Math.round(data.progress * 100)
@@ -290,7 +289,7 @@ function App() {
                   fontSize: 16,
                   margin: 2
                 }}>
-                  {Number.isFinite(ts) ? `${ts}s` : 'N/A'}
+                  {Number.isFinite(ts) ? `${ts.toFixed(1)}s` : 'N/A'}
                 </span>
               ))}
             </div>

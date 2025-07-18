@@ -67,6 +67,7 @@ def status_stream(filename):
         last_status = None
         last_progress = None
         last_scene_cuts_len = None
+        last_duplicates_len = None
         while True:
             with analysis_lock:
                 # Look for results by original filename across all analysis keys
@@ -82,24 +83,29 @@ def status_stream(filename):
                 status = 'pending'
                 progress = 0.0
                 scene_cuts_len = 0
+                duplicates_len = 0
             else:
                 status = result.get('status')
                 progress = result.get('progress', 0.0)
                 scene_cuts_len = len(result.get('scene_cuts', []))
-            # Yield if any of the tracked fields change
+                duplicates_len = len(result.get('duplicates', []))
+            # Yield if any of the tracked fields change (more sensitive to progress changes)
+            progress_changed = last_progress is None or abs(progress - last_progress) >= 0.01  # 1% change threshold
             if (
                 status != last_status or
-                progress != last_progress or
-                scene_cuts_len != last_scene_cuts_len
+                progress_changed or
+                scene_cuts_len != last_scene_cuts_len or
+                duplicates_len != last_duplicates_len
             ):
                 last_status = status
                 last_progress = progress
                 last_scene_cuts_len = scene_cuts_len
+                last_duplicates_len = duplicates_len
                 data = result if result else {'status': 'pending'}
                 yield f"data: {json.dumps(data)}\n\n"
                 if status in ('done', 'error'):
                     break
-            time.sleep(0.5)
+            time.sleep(0.2)  # More frequent updates
     response = Response(event_stream(), mimetype='text/event-stream')
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
@@ -134,7 +140,14 @@ def analyze_file(bucket, key):
     video = add_video(filename)
     video_id = video.id
     with analysis_lock:
-        analysis_results[analysis_key] = {'status': 'analyzing', 'scene_cuts': [], 'progress': 0.0, 'total_cuts': 0, 'duplicates': [], 'original_filename': filename}
+        analysis_results[analysis_key] = {
+            'status': 'analyzing', 
+            'scene_cuts': [], 
+            'progress': 0.0, 
+            'total_cuts': 0, 
+            'duplicates': [], 
+            'original_filename': filename
+        }
     s3_url = f"http://localstack:4566/{bucket}/{key}"
     try:
         # Retry logic for download
@@ -232,11 +245,17 @@ def analyze_file(bucket, key):
                 with analysis_lock:
                     analysis_results[analysis_key]['progress'] = progress
                     analysis_results[analysis_key]['scene_cuts'] = scene_timestamps.copy()
+                    # Update duplicates in real-time if found
+                    if dups_to_report:
+                        analysis_results[analysis_key]['duplicates'] = list(set(dups_to_report))
             if duplicate_found:
                 print(f"[progress-update-before-break] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames})")
                 with analysis_lock:
                     analysis_results[analysis_key]['progress'] = progress
                     analysis_results[analysis_key]['scene_cuts'] = scene_timestamps.copy()
+                    # Update duplicates before breaking
+                    if dups_to_report:
+                        analysis_results[analysis_key]['duplicates'] = list(set(dups_to_report))
                 break
         process.wait()
         with analysis_lock:
@@ -250,12 +269,14 @@ def analyze_file(bucket, key):
             }
     except Exception as e:
         with analysis_lock:
+            # Preserve any duplicates found before the error
+            existing_duplicates = analysis_results.get(analysis_key, {}).get('duplicates', [])
             analysis_results[analysis_key] = {
                 'status': 'error',
                 'error': str(e),
                 'progress': 0.0,
                 'total_cuts': 0,
-                'duplicates': [],
+                'duplicates': existing_duplicates,
                 'original_filename': filename
             }
     finally:
