@@ -122,6 +122,14 @@ def analyze_file(bucket, key):
     filename = key.split('/')[-1] if key and '/' in key else key or 'unknown_file'
     if not filename:
         filename = 'unknown_file'
+    
+    # Extract original filename by removing timestamp prefix (for duplicate detection)
+    original_filename = filename
+    if '-' in filename and filename.split('-')[0].isdigit():
+        # Remove timestamp prefix: "1234567890-video.mp4" -> "video.mp4"
+        original_filename = '-'.join(filename.split('-')[1:])
+    
+    print(f"[filename-extraction] S3 key: {key}, filename: {filename}, original: {original_filename}")
     # Create a unique identifier to prevent race conditions with same filename
     unique_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
     local_path = f"/tmp/{unique_id}_{filename}"
@@ -138,8 +146,8 @@ def analyze_file(bucket, key):
         except Exception as e:
             print(f"[cleanup] Failed to remove stale file: {local_path} ({e})")
     print(f"[analysis-triggered] Starting analysis for {filename}")
-    # Add video metadata to DB
-    video = add_video(filename)
+    # Add video metadata to DB (use original filename for duplicate detection)
+    video = add_video(original_filename)
     video_id = video.id
     with analysis_lock:
         analysis_results[analysis_key] = {
@@ -148,7 +156,8 @@ def analyze_file(bucket, key):
             'progress': 0.0, 
             'total_cuts': 0, 
             'duplicates': [], 
-            'original_filename': filename
+            'original_filename': filename,  # Keep full filename for SSE lookup
+            'clean_filename': original_filename  # Add clean filename for duplicate detection
         }
     print(f"[analysis-start] Created analysis key: {analysis_key} for original filename: {filename}")
     s3_url = f"http://localstack:4566/{bucket}/{key}"
@@ -177,6 +186,8 @@ def analyze_file(bucket, key):
                     ]
                     ffprobe_out = subprocess.check_output(ffprobe_cmd, text=True).strip()
                     total_frames = int(ffprobe_out) if ffprobe_out.isdigit() else 0
+                
+                print(f"[frame-count] Total frames detected: {total_frames}")
                 break  # Success
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -241,22 +252,28 @@ def analyze_file(bucket, key):
             # Update progress and scene cuts incrementally
             if total_frames > 0 and current_frame > 0:
                 progress = min(current_frame / total_frames, 1.0)
+            elif len(scene_timestamps) > 0:
+                # Fallback: estimate progress based on scene cuts (assume 1 cut per 10 seconds)
+                estimated_duration = max(scene_timestamps) + 10 if scene_timestamps else 10
+                progress = min(len(scene_timestamps) * 10 / estimated_duration, 1.0)
             else:
                 progress = 0.0
             if (
                 progress > last_progress or
-                now - last_update_time > 0.2 or  # More frequent updates
-                len(scene_timestamps) > len(analysis_results[analysis_key]['scene_cuts'])
+                now - last_update_time > 0.3 or  # Regular updates every 300ms
+                len(scene_timestamps) > len(analysis_results[analysis_key]['scene_cuts']) or
+                len(scene_timestamps) > 0  # Always update when we have scene cuts
             ):
                 last_progress = progress
                 last_update_time = now
-                print(f"[progress-update] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames})")
+                print(f"[progress-update] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames}) scene_cuts={len(scene_timestamps)}")
                 with analysis_lock:
                     analysis_results[analysis_key]['progress'] = progress
                     analysis_results[analysis_key]['scene_cuts'] = scene_timestamps.copy()
                     # Update duplicates in real-time if found
                     if dups_to_report:
                         analysis_results[analysis_key]['duplicates'] = list(set(dups_to_report))
+                        print(f"[progress-update] Updated duplicates: {dups_to_report}")
             if duplicate_found:
                 print(f"[progress-update-before-break] {filename}: {progress*100:.2f}% ({current_frame}/{total_frames})")
                 with analysis_lock:
@@ -274,7 +291,8 @@ def analyze_file(bucket, key):
                 'progress': 1.0,
                 'total_cuts': len(scene_timestamps),
                 'duplicates': list(set(dups_to_report)) if dups_to_report else [],
-                'original_filename': filename
+                'original_filename': filename,
+                'clean_filename': original_filename
             }
     except Exception as e:
         with analysis_lock:
@@ -286,7 +304,8 @@ def analyze_file(bucket, key):
                 'progress': 0.0,
                 'total_cuts': 0,
                 'duplicates': existing_duplicates,
-                'original_filename': filename
+                'original_filename': filename,
+                'clean_filename': original_filename
             }
     finally:
         if os.path.exists(local_path):
@@ -366,6 +385,28 @@ def debug_analysis_results():
             'analysis_results': analysis_results,
             'count': len(analysis_results)
         })
+
+@app.route('/debug/test-duplicate', methods=['POST'])
+def test_duplicate_scenario():
+    """Test the exact duplicate scenario described by user"""
+    # Create first video
+    first_video = add_video("test.mp4")
+    add_timestamps(first_video.id, [1.2, 5.7, 12.3, 18.9])
+    
+    # Simulate second upload with timestamp prefix
+    timestamp = int(time.time() * 1000)  # Milliseconds like frontend
+    second_filename = f"{timestamp}-test.mp4"
+    
+    # Test duplicate detection
+    existing_timestamps = [1.2, 5.7, 12.3, 18.9]  # Same as first video
+    dups = find_duplicates(existing_timestamps, min_match=2)
+    
+    return jsonify({
+        'first_video_id': first_video.id,
+        'second_filename': second_filename,
+        'duplicates_found': dups,
+        'message': f'Created test video, then tested duplicate detection for {second_filename}'
+    })
 
 def poll_sqs():
     import botocore
