@@ -110,7 +110,10 @@ def analyze_file(bucket, key):
     import time
     import subprocess
     import uuid
-    filename = key.split('/')[-1]
+    # Extract filename safely from S3 key
+    filename = key.split('/')[-1] if key and '/' in key else key or 'unknown_file'
+    if not filename:
+        filename = 'unknown_file'
     # Create a unique identifier to prevent race conditions with same filename
     unique_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
     local_path = f"/tmp/{unique_id}_{filename}"
@@ -288,15 +291,26 @@ def poll_sqs():
     for attempt in range(10):
         try:
             queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+            print(f"[poll_sqs] Successfully got queue URL: {queue_url}")
             break
         except botocore.exceptions.ClientError as e:
             error_code = e.response.get('Error', {}).get('Code')
             # Automatically create the queue when it does not exist yet
             if error_code == 'AWS.SimpleQueueService.NonExistentQueue':
                 print("[poll_sqs] Queue does not exist. Creating 'video-events' queue...")
-                sqs.create_queue(QueueName='video-events')
+                try:
+                    sqs.create_queue(QueueName='video-events')
+                    print("[poll_sqs] Queue created successfully. Waiting for it to be ready...")
+                    time.sleep(2)  # Give LocalStack time to initialize the queue
+                    # Try to get the URL immediately after creation
+                    queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+                    print(f"[poll_sqs] Successfully got queue URL after creation: {queue_url}")
+                    break
+                except Exception as create_error:
+                    print(f"[poll_sqs] Error creating queue: {create_error}")
+                    time.sleep(2)
             else:
-                print(f"Waiting for SQS queue to be available... (attempt {attempt+1})")
+                print(f"[poll_sqs] Waiting for SQS queue to be available... (attempt {attempt+1}, error: {error_code})")
                 time.sleep(2)
     if not queue_url:
         print("Failed to get SQS queue URL after multiple attempts.")

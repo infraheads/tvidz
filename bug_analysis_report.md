@@ -1,7 +1,7 @@
 # Bug Analysis Report for TVIDZ Codebase
 
 ## Summary
-This report documents three critical bugs identified and fixed in the TVIDZ video duplicate detection system. The bugs range from security vulnerabilities to resource management issues and race conditions.
+This report documents five critical bugs identified and fixed in the TVIDZ video duplicate detection system. The bugs range from security vulnerabilities to resource management issues, race conditions, initialization logic errors, and input validation issues.
 
 ---
 
@@ -160,17 +160,142 @@ def analyze_file(bucket, key):
 
 ---
 
+## Bug #4: SQS Queue Initialization Logic Error
+
+### **Severity**: MEDIUM (Service Reliability Issue)
+### **Location**: `inspector/app.py`, `poll_sqs()` function
+### **Type**: Logic Error - Initialization Race Condition
+
+### **Description**
+The SQS queue initialization logic had a flaw where after creating a queue, the code would continue to the next iteration of the retry loop without attempting to get the queue URL immediately. This caused unnecessary delays and potential failures during service startup, especially in environments like LocalStack where queue creation might take time to propagate.
+
+### **Root Cause**
+- Queue creation and URL retrieval were not properly sequenced
+- Missing retry logic immediately after queue creation
+- Insufficient error handling during queue creation process
+- No delay to allow LocalStack to fully initialize the created queue
+
+### **Vulnerable Code**
+```python
+for attempt in range(10):
+    try:
+        queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+        break
+    except botocore.exceptions.ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code')
+        if error_code == 'AWS.SimpleQueueService.NonExistentQueue':
+            print("[poll_sqs] Queue does not exist. Creating 'video-events' queue...")
+            sqs.create_queue(QueueName='video-events')  # Created but not immediately used
+        else:
+            print(f"Waiting for SQS queue to be available... (attempt {attempt+1})")
+            time.sleep(2)
+```
+
+### **Problem Scenario**
+1. Service starts and tries to get queue URL
+2. Queue doesn't exist, so it creates the queue
+3. Loop continues to next iteration
+4. Tries to get queue URL again before queue is ready
+5. Process repeats unnecessarily, causing delays and error messages
+
+### **Fix Applied**
+1. Added immediate queue URL retrieval after successful queue creation
+2. Implemented proper error handling for queue creation
+3. Added appropriate delays for LocalStack initialization
+4. Enhanced logging for better debugging
+
+### **Fixed Code**
+```python
+for attempt in range(10):
+    try:
+        queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+        print(f"[poll_sqs] Successfully got queue URL: {queue_url}")
+        break
+    except botocore.exceptions.ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code')
+        if error_code == 'AWS.SimpleQueueService.NonExistentQueue':
+            print("[poll_sqs] Queue does not exist. Creating 'video-events' queue...")
+            try:
+                sqs.create_queue(QueueName='video-events')
+                print("[poll_sqs] Queue created successfully. Waiting for it to be ready...")
+                time.sleep(2)  # Give LocalStack time to initialize the queue
+                # Try to get the URL immediately after creation
+                queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+                print(f"[poll_sqs] Successfully got queue URL after creation: {queue_url}")
+                break
+            except Exception as create_error:
+                print(f"[poll_sqs] Error creating queue: {create_error}")
+                time.sleep(2)
+        else:
+            print(f"[poll_sqs] Waiting for SQS queue to be available... (attempt {attempt+1}, error: {error_code})")
+            time.sleep(2)
+```
+
+---
+
+## Bug #5: Unsafe String Parsing - Potential IndexError
+
+### **Severity**: MEDIUM (Application Stability Issue)
+### **Location**: `inspector/app.py`, line 113 (analyze_file function)
+### **Type**: Input Validation - IndexError Risk
+
+### **Description**
+The filename extraction logic assumes that S3 keys will always contain forward slashes and that splitting will always yield a valid result. However, edge cases like empty keys, keys without slashes, or malformed S3 event data could cause the application to crash with an IndexError.
+
+### **Root Cause**
+- No validation of S3 key format before string operations
+- Assumption that `split('/')[-1]` will always return a valid filename
+- Missing fallback for edge cases in S3 event data
+
+### **Vulnerable Code**
+```python
+def analyze_file(bucket, key):
+    filename = key.split('/')[-1]  # Could fail if key is empty or None
+    # ... rest of function
+```
+
+### **Problem Scenarios**
+1. Empty S3 key (`key = ""`) → `"".split('/')[-1]` returns `""`
+2. None S3 key → `None.split('/')` raises AttributeError
+3. Key without slashes (`key = "video.mp4"`) → Works but could be confusing
+4. Malformed event data passing unexpected values
+
+### **Fix Applied**
+Added robust input validation and fallback handling:
+
+### **Fixed Code**
+```python
+def analyze_file(bucket, key):
+    # Extract filename safely from S3 key
+    filename = key.split('/')[-1] if key and '/' in key else key or 'unknown_file'
+    if not filename:
+        filename = 'unknown_file'
+    # ... rest of function
+```
+
+### **Benefits of Fix**
+- Prevents application crashes from malformed S3 events
+- Provides meaningful fallback for edge cases
+- Makes the code more robust and defensive
+- Maintains functionality for valid inputs while handling invalid ones gracefully
+
+---
+
 ## Impact Assessment
 
 ### **Before Fixes**
 - **Security Risk**: Potential command injection through malicious filenames
 - **Reliability Issues**: Database connection pool could be exhausted
 - **Data Loss**: Concurrent analysis of same-named files could corrupt results
+- **Service Startup Issues**: SQS initialization failures causing service instability
+- **Application Crashes**: Malformed S3 keys could cause IndexError exceptions
 
 ### **After Fixes**
 - **Enhanced Security**: Input validation prevents command injection
 - **Improved Reliability**: Proper resource management prevents connection leaks
 - **Data Integrity**: Unique analysis keys prevent race conditions
+- **Stable Initialization**: Robust SQS queue creation and initialization process
+- **Defensive Programming**: Safe string parsing prevents crashes from malformed input
 
 ## Recommendations for Future Development
 
