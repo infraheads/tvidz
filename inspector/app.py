@@ -257,13 +257,20 @@ def poll_sqs():
         aws_secret_access_key='test',
     )
     queue_url = None
+    # Attempt to fetch the queue URL; create the queue if it is missing.
     for attempt in range(10):
         try:
             queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
             break
         except botocore.exceptions.ClientError as e:
-            print(f"Waiting for SQS queue to be available... (attempt {attempt+1})")
-            time.sleep(2)
+            error_code = e.response.get('Error', {}).get('Code')
+            # Automatically create the queue when it does not exist yet
+            if error_code == 'AWS.SimpleQueueService.NonExistentQueue':
+                print("[poll_sqs] Queue does not exist. Creating 'video-events' queue...")
+                sqs.create_queue(QueueName='video-events')
+            else:
+                print(f"Waiting for SQS queue to be available... (attempt {attempt+1})")
+                time.sleep(2)
     if not queue_url:
         print("Failed to get SQS queue URL after multiple attempts.")
         return
@@ -275,6 +282,7 @@ def poll_sqs():
         )
         messages = resp.get('Messages', [])
         for msg in messages:
+            processed_successfully = False
             try:
                 body = json.loads(msg['Body'])
                 # S3 event notifications may be double-encoded
@@ -284,10 +292,13 @@ def poll_sqs():
                 bucket = record['s3']['bucket']['name']
                 key = record['s3']['object']['key']
                 threading.Thread(target=analyze_file, args=(bucket, key)).start()
+                processed_successfully = True
             except Exception as e:
                 print(f"Error processing SQS message: {e}")
             finally:
-                sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg['ReceiptHandle'])
+                # Only delete the message if it has been handled successfully to avoid data loss.
+                if processed_successfully:
+                    sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg['ReceiptHandle'])
         time.sleep(1)
 
 if __name__ == '__main__':
