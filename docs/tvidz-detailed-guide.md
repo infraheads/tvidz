@@ -368,4 +368,993 @@ graph TD
 
 ---
 
-*The next section will cover cloud and LocalStack integration, including rationale and best practices.*
+# 6. Cloud & LocalStack Integration
+
+## 6.1 LocalStack Overview
+
+LocalStack provides a fully functional local AWS cloud stack for development and testing. TVIDZ leverages LocalStack to simulate S3 and SQS services without requiring real AWS resources.
+
+### Benefits
+- **Cost-effective development**: No AWS charges during development
+- **Offline development**: Works without internet connectivity
+- **Rapid iteration**: Fast service startup and teardown
+- **Consistent environments**: Same behavior across all developer machines
+
+### Services Used
+```yaml
+# docker-compose.yaml LocalStack configuration
+localstack:
+  image: localstack/localstack:latest
+  environment:
+    - SERVICES=s3,sqs
+    - DEBUG=1
+    - LS_S3_WEBHOOKS=videos=http://inspector:5000/notify
+```
+
+## 6.2 S3 Configuration
+
+### Bucket Setup
+The inspector service automatically configures S3 during startup:
+
+```bash
+# From entrypoint.sh
+awslocal s3 mb s3://videos || true
+awslocal s3api put-bucket-cors --bucket videos --cors-configuration file:///tmp/cors.json
+awslocal s3api put-bucket-notification-configuration --bucket videos --notification-configuration file:///tmp/s3-event-config.json
+```
+
+### CORS Configuration
+```json
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["*"],
+      "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+      "AllowedHeaders": ["*"],
+      "ExposeHeaders": ["ETag"]
+    }
+  ]
+}
+```
+
+### Event Notifications
+```json
+{
+  "QueueConfigurations": [
+    {
+      "Id": "SendToSQS",
+      "QueueArn": "arn:aws:sqs:us-east-1:000000000000:video-events",
+      "Events": ["s3:ObjectCreated:*"]
+    }
+  ]
+}
+```
+
+## 6.3 SQS Integration
+
+### Queue Management
+The inspector service handles queue creation and polling:
+
+```python
+def poll_sqs():
+    sqs = boto3.client(
+        'sqs',
+        region_name='us-east-1',
+        endpoint_url='http://localstack:4566',
+        aws_access_key_id='test',
+        aws_secret_access_key='test',
+    )
+    
+    # Auto-create queue if it doesn't exist
+    try:
+        queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+    except ClientError:
+        sqs.create_queue(QueueName='video-events')
+        queue_url = sqs.get_queue_url(QueueName='video-events')['QueueUrl']
+    
+    # Poll for messages
+    while True:
+        response = sqs.receive_message(
+            QueueUrl=queue_url,
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=10
+        )
+        # Process messages...
+```
+
+### Message Processing
+```python
+def process_s3_event(message_body):
+    event = json.loads(message_body)
+    record = event['Records'][0]
+    bucket = record['s3']['bucket']['name']
+    key = record['s3']['object']['key']
+    
+    # Start video analysis
+    threading.Thread(target=analyze_file, args=(bucket, key)).start()
+```
+
+## 6.4 Production Migration
+
+### AWS Services Mapping
+| LocalStack | AWS Production |
+|------------|----------------|
+| S3 LocalStack | Amazon S3 |
+| SQS LocalStack | Amazon SQS |
+| Local PostgreSQL | Amazon RDS |
+
+### Configuration Changes
+```python
+# Production AWS configuration
+import os
+
+if os.getenv('ENVIRONMENT') == 'production':
+    s3_client = boto3.client('s3')  # No endpoint_url
+    sqs_client = boto3.client('sqs')
+else:
+    s3_client = boto3.client('s3', endpoint_url='http://localstack:4566')
+    sqs_client = boto3.client('sqs', endpoint_url='http://localstack:4566')
+```
+
+---
+
+# 7. Docker & Environment Management
+
+## 7.1 Multi-Service Architecture
+
+TVIDZ uses Docker Compose to orchestrate multiple services:
+
+```yaml
+version: '3.8'
+services:
+  localstack:     # AWS service emulation
+  frontend:       # React application
+  inspector:      # Python backend
+  postgres:       # Database
+```
+
+## 7.2 Build Configuration
+
+### Frontend Dockerfile
+```dockerfile
+FROM node:18-alpine
+WORKDIR /app
+
+# Capture build metadata
+ARG BUILD_DATE
+ARG BUILD_TIME
+ARG GIT_COMMIT
+ENV REACT_APP_BUILD_DATE=${BUILD_DATE}
+ENV REACT_APP_BUILD_TIME=${BUILD_TIME}
+ENV REACT_APP_GIT_COMMIT=${GIT_COMMIT}
+
+COPY package.json ./
+RUN npm install
+COPY . .
+CMD ["npm", "start"]
+```
+
+### Inspector Dockerfile
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+
+# Capture build metadata
+ARG BUILD_DATE
+ARG BUILD_TIME
+ARG GIT_COMMIT
+ENV BUILD_DATE=${BUILD_DATE}
+ENV BUILD_TIME=${BUILD_TIME}
+ENV GIT_COMMIT=${GIT_COMMIT}
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y ffmpeg libssl-dev
+
+# Install Python dependencies
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+## 7.3 Environment Variables
+
+### Frontend Environment
+```bash
+REACT_APP_S3_ENDPOINT=http://localhost:4566
+REACT_APP_S3_BUCKET=videos
+HOST=0.0.0.0
+CHOKIDAR_USEPOLLING=true
+```
+
+### Inspector Environment
+```bash
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_DEFAULT_REGION=us-east-1
+POSTGRES_URL=postgresql://tvidz:tvidz@postgres:5432/tvidz
+```
+
+## 7.4 Build Scripts
+
+### Development Build Script
+```bash
+#!/bin/bash
+# build-dev.sh
+
+BUILD_DATE=$(date +"%Y-%m-%d")
+BUILD_TIME=$(date +"%H:%M:%S %Z")
+GIT_COMMIT=$(git rev-parse --short HEAD)
+
+export BUILD_DATE BUILD_TIME GIT_COMMIT
+
+echo "🚀 Building TVIDZ with build info..."
+docker-compose down
+docker-compose up --build -d
+
+echo "✅ Services running:"
+echo "   Frontend: http://localhost:3000"
+echo "   Inspector: http://localhost:5001"
+```
+
+## 7.5 Volume Management
+
+### Data Persistence
+```yaml
+volumes:
+  pgdata:  # PostgreSQL data persistence
+  
+services:
+  postgres:
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+```
+
+### Temporary Storage
+- Video files are stored temporarily in `/tmp/` during analysis
+- Files are cleaned up after processing to prevent disk space issues
+
+---
+
+# 8. CI/CD & Automated Testing
+
+## 8.1 Testing Strategy
+
+### Frontend Testing
+```javascript
+// App.test.js
+import { render, screen } from '@testing-library/react';
+import App from './App';
+
+test('renders upload button', () => {
+  render(<App />);
+  const uploadButton = screen.getByText(/upload/i);
+  expect(uploadButton).toBeInTheDocument();
+});
+
+test('displays scene cut timestamps', () => {
+  render(<App />);
+  // Mock SSE data...
+  expect(screen.getByText(/scene cut timestamps/i)).toBeInTheDocument();
+});
+```
+
+### Backend Testing
+```python
+# test_app.py
+import pytest
+from app import app
+
+@pytest.fixture
+def client():
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        yield client
+
+def test_status_endpoint(client):
+    response = client.get('/status/test.mp4')
+    assert response.status_code == 200
+    assert 'status' in response.json
+
+def test_build_info_endpoint(client):
+    response = client.get('/build-info')
+    assert response.status_code == 200
+    assert 'inspector' in response.json
+```
+
+## 8.2 Integration Testing
+
+### End-to-End Test Flow
+```python
+def test_complete_video_analysis():
+    # 1. Upload video to S3
+    # 2. Verify SQS event received
+    # 3. Check analysis starts
+    # 4. Verify progress updates
+    # 5. Confirm scene cuts detected
+    # 6. Test duplicate detection
+    pass
+```
+
+### Docker Testing
+```bash
+#!/bin/bash
+# test-integration.sh
+
+echo "Starting integration tests..."
+
+# Start services
+docker-compose up -d
+
+# Wait for services
+sleep 30
+
+# Run tests
+pytest tests/integration/
+npm test --watchAll=false
+
+# Cleanup
+docker-compose down
+```
+
+## 8.3 GitHub Actions CI/CD
+
+### Workflow Configuration
+```yaml
+name: TVIDZ CI/CD
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Frontend Tests
+        run: |
+          cd frontend
+          npm install
+          npm test
+      - name: Backend Tests
+        run: |
+          cd inspector
+          pip install -r requirements.txt
+          pytest
+```
+
+## 8.4 Quality Assurance
+
+### Code Quality Tools
+```bash
+# Python linting
+flake8 inspector/
+ruff inspector/
+
+# JavaScript linting
+eslint frontend/src/
+
+# Security scanning
+safety check
+npm audit
+```
+
+### Performance Testing
+```bash
+# Load testing with curl
+for i in {1..10}; do
+  curl -X POST http://localhost:5001/debug/create-test-video &
+done
+wait
+
+# Monitor resource usage
+docker stats
+```
+
+---
+
+# 9. Troubleshooting & FAQ
+
+## 9.1 Common Issues
+
+### Services Won't Start
+**Problem**: Docker containers fail to start
+**Solutions**:
+```bash
+# Check port conflicts
+netstat -tulpn | grep -E ':(3000|4566|5001|5432)'
+
+# Clean Docker resources
+docker system prune -a
+docker volume prune
+
+# Check logs
+docker-compose logs localstack
+docker-compose logs inspector
+```
+
+### Progress Bar Not Updating
+**Problem**: Frontend shows frozen progress
+**Solutions**:
+```bash
+# Check SSE connection
+curl -N http://localhost:5001/status/stream/test.mp4
+
+# Check analysis results
+curl http://localhost:5001/debug/analysis-results
+
+# Verify frontend console for errors
+# Check browser developer tools Network tab
+```
+
+### Duplicate Detection Not Working
+**Problem**: Duplicates not detected or displayed
+**Solutions**:
+```bash
+# Check database content
+curl http://localhost:5001/debug/videos
+
+# Create test duplicates
+curl -X POST http://localhost:5001/debug/create-test-video \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "test.mp4", "timestamps": [1.2, 5.7, 12.3]}'
+
+# Check logs for duplicate detection
+docker logs inspector | grep duplicate
+```
+
+### SQS Queue Issues
+**Problem**: Video uploads not triggering analysis
+**Solutions**:
+```bash
+# Check LocalStack health
+curl http://localhost:4566/health
+
+# Verify queue exists
+docker exec localstack awslocal sqs list-queues
+
+# Check S3 event configuration
+docker exec localstack awslocal s3api get-bucket-notification-configuration --bucket videos
+```
+
+## 9.2 Debug Commands
+
+### System Health Check
+```bash
+#!/bin/bash
+# health-check.sh
+
+echo "=== TVIDZ Health Check ==="
+
+# Check services
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+# Test endpoints
+curl -s http://localhost:3000 > /dev/null && echo "✅ Frontend" || echo "❌ Frontend"
+curl -s http://localhost:5001/build-info > /dev/null && echo "✅ Inspector" || echo "❌ Inspector"
+curl -s http://localhost:4566/health > /dev/null && echo "✅ LocalStack" || echo "❌ LocalStack"
+
+# Database connection
+docker exec postgres pg_isready -U tvidz && echo "✅ PostgreSQL" || echo "❌ PostgreSQL"
+```
+
+### Log Analysis
+```bash
+# Follow all logs
+docker-compose logs -f
+
+# Filter specific logs
+docker logs inspector 2>&1 | grep -E "(duplicate|SSE|progress)"
+
+# Count log entries
+docker logs inspector 2>&1 | grep "progress-update" | wc -l
+```
+
+## 9.3 Performance Optimization
+
+### Resource Monitoring
+```bash
+# Monitor container resources
+docker stats --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}"
+
+# Check disk usage
+df -h
+docker system df
+```
+
+### Optimization Tips
+- **Video Size**: Large videos consume more CPU and memory
+- **Concurrent Analysis**: Limit parallel video processing
+- **Database Indexing**: Add indexes for large datasets
+- **Memory Allocation**: Increase Docker memory for large videos
+
+---
+
+# 10. Advanced Topics
+
+## 10.1 Scaling & Performance
+
+### Horizontal Scaling
+```yaml
+# docker-compose.scale.yaml
+version: '3.8'
+services:
+  inspector:
+    scale: 3  # Run 3 inspector instances
+    environment:
+      - WORKER_ID=${WORKER_ID}
+```
+
+### Load Balancing
+```nginx
+# nginx.conf
+upstream inspector_backend {
+    server inspector_1:5000;
+    server inspector_2:5000;
+    server inspector_3:5000;
+}
+
+server {
+    location /api/ {
+        proxy_pass http://inspector_backend;
+    }
+}
+```
+
+### Database Optimization
+```sql
+-- Add indexes for performance
+CREATE INDEX idx_videos_filename ON videos(filename);
+CREATE INDEX idx_video_timestamps_video_id ON video_timestamps(video_id);
+CREATE INDEX gin_timestamps ON video_timestamps USING gin(timestamps);
+
+-- Query optimization
+EXPLAIN ANALYZE SELECT * FROM video_timestamps WHERE timestamps @> ARRAY[1.2, 5.7];
+```
+
+### Caching Strategy
+```python
+# Redis caching for analysis results
+import redis
+
+redis_client = redis.Redis(host='redis', port=6379)
+
+def cache_analysis_result(filename, result):
+    redis_client.setex(f"analysis:{filename}", 3600, json.dumps(result))
+
+def get_cached_result(filename):
+    cached = redis_client.get(f"analysis:{filename}")
+    return json.loads(cached) if cached else None
+```
+
+## 10.2 Security Considerations
+
+### Input Validation
+```python
+import os
+import magic
+
+def validate_video_file(file_path):
+    """Validate uploaded file is actually a video"""
+    if not os.path.exists(file_path):
+        raise ValueError("File does not exist")
+    
+    # Check file type
+    file_type = magic.from_file(file_path, mime=True)
+    if not file_type.startswith('video/'):
+        raise ValueError("File is not a video")
+    
+    # Check file size (100MB limit)
+    if os.path.getsize(file_path) > 100 * 1024 * 1024:
+        raise ValueError("File too large")
+    
+    return True
+```
+
+### Authentication & Authorization
+```python
+from functools import wraps
+from flask import request, jsonify
+
+def require_api_key(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        api_key = request.headers.get('X-API-Key')
+        if not api_key or api_key != os.getenv('API_KEY'):
+            return jsonify({'error': 'Invalid API key'}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route('/admin/clear-db', methods=['POST'])
+@require_api_key
+def clear_db():
+    # Protected endpoint
+    pass
+```
+
+### Data Sanitization
+```python
+import re
+
+def sanitize_filename(filename):
+    """Remove dangerous characters from filename"""
+    # Remove path traversal attempts
+    filename = os.path.basename(filename)
+    
+    # Remove dangerous characters
+    filename = re.sub(r'[^\w\-_\.]', '_', filename)
+    
+    # Limit length
+    if len(filename) > 255:
+        filename = filename[:255]
+    
+    return filename
+```
+
+### SSL/TLS Configuration
+```nginx
+# nginx-ssl.conf
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+    
+    ssl_certificate /etc/ssl/certs/your-cert.pem;
+    ssl_certificate_key /etc/ssl/private/your-key.pem;
+    
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options "nosniff" always;
+}
+```
+
+## 10.3 Extending the Platform
+
+### Custom Analysis Plugins
+```python
+class AnalysisPlugin:
+    def __init__(self, name):
+        self.name = name
+    
+    def analyze(self, video_path):
+        """Override this method for custom analysis"""
+        raise NotImplementedError
+    
+    def get_results(self):
+        """Return analysis results"""
+        raise NotImplementedError
+
+class AudioAnalysisPlugin(AnalysisPlugin):
+    def analyze(self, video_path):
+        # Extract audio features
+        # Perform audio analysis
+        pass
+
+# Register plugins
+plugin_manager.register(AudioAnalysisPlugin("audio_analyzer"))
+```
+
+### Webhook Integration
+```python
+import requests
+
+def send_webhook(event_type, data):
+    """Send webhook notifications"""
+    webhook_urls = os.getenv('WEBHOOK_URLS', '').split(',')
+    
+    payload = {
+        'event': event_type,
+        'timestamp': datetime.utcnow().isoformat(),
+        'data': data
+    }
+    
+    for url in webhook_urls:
+        if url:
+            try:
+                requests.post(url, json=payload, timeout=5)
+            except Exception as e:
+                print(f"Webhook failed: {e}")
+
+# Usage
+send_webhook('analysis_complete', {
+    'filename': 'video.mp4',
+    'scene_cuts': [1.2, 5.7, 12.3],
+    'duplicates': ['duplicate.mp4']
+})
+```
+
+### Custom Storage Backends
+```python
+class StorageBackend:
+    def upload(self, file_path, key):
+        raise NotImplementedError
+    
+    def download(self, key, local_path):
+        raise NotImplementedError
+    
+    def delete(self, key):
+        raise NotImplementedError
+
+class MinIOBackend(StorageBackend):
+    def __init__(self, endpoint, access_key, secret_key):
+        self.client = Minio(endpoint, access_key, secret_key)
+    
+    def upload(self, file_path, key):
+        self.client.fput_object('videos', key, file_path)
+    
+    def download(self, key, local_path):
+        self.client.fget_object('videos', key, local_path)
+```
+
+### Machine Learning Integration
+```python
+import torch
+import torchvision.transforms as transforms
+
+class MLAnalysisPlugin(AnalysisPlugin):
+    def __init__(self):
+        self.model = torch.load('video_classifier.pth')
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+        ])
+    
+    def analyze(self, video_path):
+        frames = self.extract_frames(video_path)
+        classifications = []
+        
+        for frame in frames:
+            tensor = self.transform(frame).unsqueeze(0)
+            with torch.no_grad():
+                output = self.model(tensor)
+                classification = torch.argmax(output, dim=1)
+                classifications.append(classification.item())
+        
+        return classifications
+```
+
+---
+
+# 11. Appendices
+
+## A. API Reference
+
+### Inspector API Endpoints
+
+#### Core Endpoints
+- `GET /status/<filename>` - Get analysis status
+- `GET /status/stream/<filename>` - Real-time SSE stream
+- `POST /notify` - S3 event webhook (internal)
+
+#### Build Information
+- `GET /build-info` - Service build metadata
+
+#### Debug Endpoints
+- `GET /debug/videos` - List all videos in database
+- `GET /debug/analysis-results` - Current analysis state
+- `POST /debug/create-test-video` - Create test video for debugging
+
+#### Admin Endpoints
+- `POST /admin/clear-db` - Clear all database records
+
+### Request/Response Examples
+
+#### Get Analysis Status
+```bash
+curl http://localhost:5001/status/video.mp4
+```
+
+Response:
+```json
+{
+  "status": "done",
+  "progress": 1.0,
+  "scene_cuts": [1.2, 5.7, 12.3, 18.9],
+  "total_cuts": 4,
+  "duplicates": ["duplicate.mp4"],
+  "original_filename": "video.mp4"
+}
+```
+
+#### Create Test Video
+```bash
+curl -X POST http://localhost:5001/debug/create-test-video \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "test.mp4",
+    "timestamps": [1.2, 5.7, 12.3, 18.9, 25.1]
+  }'
+```
+
+## B. Database Schema
+
+### Complete PostgreSQL Schema
+```sql
+-- Videos table
+CREATE TABLE videos (
+    id SERIAL PRIMARY KEY,
+    filename VARCHAR(255) NOT NULL,
+    upload_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    thumbnail_path VARCHAR(500),
+    duplicates INTEGER[] DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Video timestamps table
+CREATE TABLE video_timestamps (
+    id SERIAL PRIMARY KEY,
+    video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    timestamps DOUBLE PRECISION[] NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(video_id)
+);
+
+-- Indexes for performance
+CREATE INDEX idx_videos_filename ON videos(filename);
+CREATE INDEX idx_videos_upload_time ON videos(upload_time);
+CREATE INDEX idx_video_timestamps_video_id ON video_timestamps(video_id);
+CREATE INDEX gin_timestamps ON video_timestamps USING gin(timestamps);
+
+-- Functions and triggers
+CREATE OR REPLACE FUNCTION update_modified_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_videos_modtime BEFORE UPDATE ON videos
+    FOR EACH ROW EXECUTE FUNCTION update_modified_column();
+
+CREATE TRIGGER update_video_timestamps_modtime BEFORE UPDATE ON video_timestamps
+    FOR EACH ROW EXECUTE FUNCTION update_modified_column();
+```
+
+### Sample Data
+```sql
+-- Insert sample videos
+INSERT INTO videos (filename) VALUES 
+    ('sample1.mp4'),
+    ('sample2.mp4'),
+    ('duplicate.mp4');
+
+-- Insert sample timestamps
+INSERT INTO video_timestamps (video_id, timestamps) VALUES 
+    (1, ARRAY[1.2, 5.7, 12.3, 18.9, 25.1]),
+    (2, ARRAY[2.1, 8.4, 15.7, 22.1, 28.9]),
+    (3, ARRAY[1.2, 5.7, 12.3]);  -- Partial match with video 1
+
+-- Update duplicates
+UPDATE videos SET duplicates = ARRAY[3] WHERE id = 1;
+UPDATE videos SET duplicates = ARRAY[1] WHERE id = 3;
+```
+
+## C. Example Data & Workflows
+
+### Complete Video Analysis Workflow
+```bash
+#!/bin/bash
+# complete-workflow.sh
+
+echo "=== TVIDZ Complete Workflow Demo ==="
+
+# 1. Start services
+echo "1. Starting services..."
+./build-dev.sh
+
+# 2. Wait for services
+echo "2. Waiting for services to be ready..."
+sleep 30
+
+# 3. Create test video
+echo "3. Creating test video..."
+curl -X POST http://localhost:5001/debug/create-test-video \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "original.mp4", "timestamps": [1.2, 5.7, 12.3, 18.9]}'
+
+# 4. Check database
+echo "4. Checking database content..."
+curl http://localhost:5001/debug/videos | jq
+
+# 5. Upload video via frontend (manual step)
+echo "5. Upload a video via http://localhost:3000"
+echo "   - Watch for duplicate detection"
+echo "   - Monitor progress bar"
+echo "   - View scene cut timestamps"
+
+# 6. Monitor analysis
+echo "6. Monitoring analysis results..."
+curl http://localhost:5001/debug/analysis-results | jq
+
+echo "✅ Workflow complete!"
+```
+
+### Frontend Integration Example
+```javascript
+// complete-frontend-flow.js
+async function demonstrateWorkflow() {
+  // 1. Upload video
+  const fileInput = document.querySelector('input[type="file"]');
+  const file = fileInput.files[0];
+  
+  if (!file) {
+    console.log('Please select a video file');
+    return;
+  }
+  
+  // 2. Monitor upload progress
+  console.log('Starting upload...');
+  
+  // 3. Listen for analysis updates
+  const eventSource = new EventSource(
+    `http://localhost:5001/status/stream/${encodeURIComponent(file.name)}`
+  );
+  
+  eventSource.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    console.log('Analysis update:', data);
+    
+    if (data.duplicates && data.duplicates.length > 0) {
+      console.log('🚨 Duplicates detected:', data.duplicates);
+    }
+    
+    if (data.scene_cuts && data.scene_cuts.length > 0) {
+      console.log('🎬 Scene cuts:', data.scene_cuts);
+    }
+    
+    if (data.status === 'done') {
+      console.log('✅ Analysis complete!');
+      eventSource.close();
+    }
+  };
+  
+  eventSource.onerror = () => {
+    console.log('❌ SSE connection error');
+    eventSource.close();
+  };
+}
+```
+
+## D. Glossary
+
+**Analysis Key**: Unique identifier for each video analysis session, combining timestamp and UUID to prevent race conditions.
+
+**CORS (Cross-Origin Resource Sharing)**: Web security feature that allows controlled access to resources from different domains.
+
+**Docker Compose**: Tool for defining and running multi-container Docker applications.
+
+**Duplicate Detection**: Algorithm that compares scene cut timestamps to identify similar or identical videos.
+
+**FFmpeg**: Open-source multimedia framework for video/audio processing and analysis.
+
+**LocalStack**: Local AWS cloud stack emulator for development and testing.
+
+**PostgreSQL**: Open-source relational database management system.
+
+**Scene Cut**: Transition point in a video where the content significantly changes, detected using FFmpeg.
+
+**Server-Sent Events (SSE)**: Web standard for pushing real-time updates from server to client over HTTP.
+
+**SQS (Simple Queue Service)**: AWS message queuing service for decoupling system components.
+
+**Tolerance-based Matching**: Comparison algorithm that accounts for small differences in floating-point numbers.
+
+**Video Timestamps**: Array of time points (in seconds) where scene cuts occur in a video.
+
+**Webhook**: HTTP callback mechanism for real-time event notifications between services.
+
+---
+
+## Conclusion
+
+This comprehensive guide covers all aspects of the TVIDZ platform, from basic architecture to advanced customization. The system demonstrates modern cloud-native development practices while providing a robust foundation for video analysis and duplicate detection.
+
+For additional support or contributions, please refer to the main project repository and issue tracker.
+
+**Happy coding! 🚀**
