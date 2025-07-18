@@ -72,13 +72,16 @@ def status_stream(filename):
             with analysis_lock:
                 # Look for results by original filename across all analysis keys
                 result = None
-                for key, data in analysis_results.items():
-                    if data.get('original_filename') == filename:
-                        result = data
-                        break
-                # Fallback to direct lookup for backward compatibility
-                if not result:
-                    result = analysis_results.get(filename)
+                
+                # Try exact match first (for backward compatibility)
+                if filename in analysis_results:
+                    result = analysis_results[filename]
+                else:
+                    # Look for results by original filename (this is the main case now)
+                    for key, data in analysis_results.items():
+                        if isinstance(data, dict) and data.get('original_filename') == filename:
+                            result = data
+                            break
             if not result:
                 status = 'pending'
                 progress = 0.0
@@ -89,11 +92,10 @@ def status_stream(filename):
                 progress = result.get('progress', 0.0)
                 scene_cuts_len = len(result.get('scene_cuts', []))
                 duplicates_len = len(result.get('duplicates', []))
-            # Yield if any of the tracked fields change (more sensitive to progress changes)
-            progress_changed = last_progress is None or abs(progress - last_progress) >= 0.01  # 1% change threshold
+            # Yield if any of the tracked fields change
             if (
                 status != last_status or
-                progress_changed or
+                progress != last_progress or  # Any progress change
                 scene_cuts_len != last_scene_cuts_len or
                 duplicates_len != last_duplicates_len
             ):
@@ -148,6 +150,7 @@ def analyze_file(bucket, key):
             'duplicates': [], 
             'original_filename': filename
         }
+    print(f"[analysis-start] Created analysis key: {analysis_key} for original filename: {filename}")
     s3_url = f"http://localstack:4566/{bucket}/{key}"
     try:
         # Retry logic for download
@@ -242,7 +245,7 @@ def analyze_file(bucket, key):
                 progress = 0.0
             if (
                 progress > last_progress or
-                now - last_update_time > 0.5 or
+                now - last_update_time > 0.2 or  # More frequent updates
                 len(scene_timestamps) > len(analysis_results[analysis_key]['scene_cuts'])
             ):
                 last_progress = progress
@@ -354,6 +357,15 @@ def create_test_video():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/debug/analysis-results', methods=['GET'])
+def debug_analysis_results():
+    """Debug endpoint to see current analysis results in memory"""
+    with analysis_lock:
+        return jsonify({
+            'analysis_results': analysis_results,
+            'count': len(analysis_results)
+        })
 
 def poll_sqs():
     import botocore
