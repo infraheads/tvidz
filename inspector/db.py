@@ -4,10 +4,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from datetime import datetime
 
-if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("GITHUB_ACTIONS"):
-    DB_URL = "sqlite:///:memory:"
-else:
-    DB_URL = os.environ.get('POSTGRES_URL', 'postgresql://tvidz:tvidz@postgres:5432/tvidz')
+DB_URL = os.environ.get('POSTGRES_URL', 'postgresql://tvidz:tvidz@postgres:5432/tvidz')
 engine = create_engine(DB_URL)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
