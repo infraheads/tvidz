@@ -46,6 +46,9 @@ function App() {
   const fetchBuildInfo = async () => {
     try {
       const response = await fetch(`${INSPECTOR_URL}/build-info`);
+      if (!response || typeof response.json !== 'function') {
+        throw new Error('No response or invalid response from build info fetch');
+      }
       const data = await response.json();
       
       // Combine frontend and inspector build info
@@ -316,6 +319,7 @@ function App() {
           type="file"
           ref={fileInputRef}
           style={{ display: "none" }}
+          data-testid="file-input"
           onChange={handleFileChange}
         />
         <button
