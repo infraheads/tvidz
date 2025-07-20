@@ -246,6 +246,12 @@ def analyze_file(bucket, key):
                                 duplicate_found = True
                                 print(f"[duplicate] Found {len(dups_to_report)} duplicates: {dups_to_report}")
                                 print(f"[duplicate] Current scene cuts: {scene_timestamps}")
+                                # Terminate ffmpeg process immediately
+                                try:
+                                    process.terminate()
+                                    print(f"[duplicate] ffmpeg process terminated early due to duplicate detection.")
+                                except Exception as e:
+                                    print(f"[duplicate] Failed to terminate ffmpeg process: {e}")
                                 break
                     except Exception:
                         pass

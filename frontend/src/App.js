@@ -36,6 +36,7 @@ function App() {
   const eventSourceRef = useRef();
   const uploadStartRef = useRef(null);
   const analysisStartRef = useRef(null);
+  const [dbCleanStatus, setDbCleanStatus] = useState("");
 
   const handleUploadClick = () => {
     fileInputRef.current.value = null; // Always reset
@@ -86,6 +87,7 @@ function App() {
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (file) {
+      setDuplicates([]); // Clear duplicates on new file selection
       // Always use a unique filename to force S3 event
       const uniqueFile = new File([file], `${Date.now()}-${file.name}`, { type: file.type });
       uploadFile(uniqueFile);
@@ -189,6 +191,7 @@ function App() {
     setAnalyzing(false);
     setUploadDuration(null);
     setAnalysisDuration(null);
+    setDuplicates([]); // Clear duplicates at the start of upload
     uploadStartRef.current = Date.now();
     try {
       // 1. Generate pre-signed PUT URL
@@ -251,6 +254,21 @@ function App() {
     }
   };
 
+  // Add DB cleanup handler
+  const handleDbCleanup = async () => {
+    setDbCleanStatus("");
+    try {
+      const resp = await fetch("http://localhost:5001/admin/clear-db", { method: "POST" });
+      if (resp.ok) {
+        setDbCleanStatus("Database cleaned successfully.");
+      } else {
+        setDbCleanStatus("Failed to clean database.");
+      }
+    } catch (err) {
+      setDbCleanStatus("Error cleaning database.");
+    }
+  };
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -270,6 +288,30 @@ function App() {
         alignItems: "center",
         minWidth: 400
       }}>
+        {/* DB Cleanup Button */}
+        <button
+          onClick={handleDbCleanup}
+          style={{
+            fontSize: 16,
+            padding: "8px 24px",
+            borderRadius: 6,
+            background: "#b71c1c",
+            color: "#fff",
+            border: "none",
+            cursor: "pointer",
+            fontWeight: 600,
+            marginBottom: 16,
+            marginTop: -16,
+            alignSelf: "flex-end"
+          }}
+        >
+          Clean Database
+        </button>
+        {dbCleanStatus && (
+          <div style={{ color: dbCleanStatus.includes("success") ? "#388e3c" : "#b71c1c", marginBottom: 8, fontWeight: 500 }}>
+            {dbCleanStatus}
+          </div>
+        )}
         <input
           type="file"
           ref={fileInputRef}
@@ -293,6 +335,10 @@ function App() {
           Upload
         </button>
         {/* Single Progress Bar for Upload + Analysis */}
+        {/* (1) Move label above the bar for visibility */}
+        <div style={{ marginBottom: 4, fontWeight: 600, fontSize: 16, color: '#333', minHeight: 24 }}>
+          {barLabel}
+        </div>
         <div style={{ width: 320, height: 24, background: "#e0e0e0", borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
           <div style={{
             width: `${Math.round(combinedProgress)}%`,
@@ -306,7 +352,7 @@ function App() {
             fontWeight: 600,
             fontSize: 16
           }}>
-            {barLabel}
+            {/* Progress bar now only shows color, not label */}
           </div>
         </div>
         {/* Durations for upload and analysis */}
@@ -316,7 +362,8 @@ function App() {
           {analysisDuration && <span>Analysis duration: {analysisDuration}s</span>}
         </div>
         {/* Scene Cut Timestamps */}
-        {sceneCuts.length > 0 && (
+        {/* (2) Filter out non-finite scene cut timestamps before rendering */}
+        {sceneCuts.filter(ts => Number.isFinite(ts)).length > 0 && (
           <div style={{ marginTop: 16, textAlign: "center" }}>
             <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>Scene Cut Timestamps:</div>
             <div style={{
@@ -325,7 +372,7 @@ function App() {
               gap: 8,
               justifyContent: "center"
             }}>
-              {sceneCuts.map((ts, i) => (
+              {sceneCuts.filter(ts => Number.isFinite(ts)).map((ts, i) => (
                 <span key={i} style={{
                   background: "#f0f0f0",
                   borderRadius: 6,
@@ -333,18 +380,21 @@ function App() {
                   fontSize: 16,
                   margin: 2
                 }}>
-                  {Number.isFinite(ts) ? `${ts.toFixed(1)}s` : 'N/A'}
+                  {`${ts.toFixed(1)}s`}
                 </span>
               ))}
             </div>
           </div>
         )}
+        {/* (3) Render duplicate video names as a bulleted list for clarity */}
         {duplicates.length > 0 && (
           <div style={{ marginTop: 24, color: '#b71c1c', fontWeight: 600 }}>
             Duplicate video(s) detected:<br />
-            {[...new Set(duplicates)].map((name, i) => (
-              <div key={i}>{name}</div>
-            ))}
+            <ul style={{ textAlign: 'left', margin: '8px 0 0 24px', padding: 0 }}>
+              {[...new Set(duplicates)].map((name, i) => (
+                <li key={i} style={{ fontWeight: 400 }}>{name}</li>
+              ))}
+            </ul>
           </div>
         )}
         

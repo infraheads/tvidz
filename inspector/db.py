@@ -74,31 +74,22 @@ def update_duplicates(video_id, duplicate_ids):
     finally:
         session.close()
 
-def find_duplicates(new_timestamps, min_match=3):
+def find_duplicates(new_timestamps, min_match=5):
     """
     Returns a list of (video_id, match_count) for videos whose timestamps contain at least min_match elements of new_timestamps.
-    Uses tolerance-based matching for floating point timestamps.
+    Only exact matches are considered (no tolerance).
     """
     session = SessionLocal()
     try:
         candidates = session.query(VideoTimestamps).all()
         results = []
-        print(f"[find_duplicates] Checking {len(candidates)} existing videos against {len(new_timestamps)} new timestamps")
-        
         for cand in candidates:
             match_count = 0
-            # Use tolerance-based matching for floating point precision
             for new_ts in new_timestamps:
-                for existing_ts in cand.timestamps:
-                    if abs(new_ts - existing_ts) < 0.1:  # 0.1 second tolerance
-                        match_count += 1
-                        break  # Only count each new timestamp once
-            
-            print(f"[find_duplicates] Video ID {cand.video_id}: {match_count} matches (need {min_match})")
+                if new_ts in cand.timestamps:
+                    match_count += 1
             if match_count >= min_match:
                 results.append((cand.video_id, match_count))
-                
-        print(f"[find_duplicates] Found {len(results)} duplicates: {results}")
         return results
     finally:
         session.close()

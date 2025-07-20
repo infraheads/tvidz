@@ -229,6 +229,47 @@ WHERE timestamps @> ARRAY[1.23, 4.56, 7.89];
 
 ---
 
+## Database Querying and Indexing
+
+### Schema Overview
+- The database uses two main tables: `videos` and `video_timestamps`.
+- `videos` stores metadata for each video (filename, upload time, etc.).
+- `video_timestamps` stores an array of scene cut timestamps (as floats) for each video, linked by `video_id`.
+
+### Querying
+- To find duplicates, the backend queries all `video_timestamps` rows and compares the new video's scene cut array to each existing video's array.
+- The query is performed in Python using SQLAlchemy, fetching all candidates and comparing arrays in memory for exact matches.
+- Additional queries (by filename or ID) are simple indexed lookups on the `videos` table.
+
+### Indexes
+- The `id` columns in both tables are primary keys and indexed by default.
+- The `video_id` column in `video_timestamps` is a foreign key and indexed.
+- The `filename` column in `videos` is indexed for fast lookup by filename.
+- The `timestamps` column is a PostgreSQL array (float[]). For advanced similarity search, a GIN index could be added, but for exact match and small datasets, in-memory comparison is efficient.
+
+### Efficiency Rationale
+- For the current use case (moderate number of videos, array comparison for duplicates), this design is efficient:
+  - Primary and foreign key indexes make lookups fast.
+  - Array columns allow storing all scene cuts in a single row per video, reducing join complexity.
+  - In-memory comparison is fast for small to moderate datasets and allows flexible matching logic.
+  - If the dataset grows, a GIN index on the `timestamps` array can be added for scalable similarity search.
+
+### Example Query
+- Find a video by filename:
+  ```python
+  session.query(Video).filter_by(filename='myvideo.mp4').first()
+  ```
+- Get all scene cut timestamps for a video:
+  ```python
+  session.query(VideoTimestamps).filter_by(video_id=video.id).first().timestamps
+  ```
+- Find duplicates (see `find_duplicates` in `inspector/db.py`):
+  ```python
+  find_duplicates(new_timestamps, min_match=5)
+  ```
+
+---
+
 *The next section will cover the frontend React application in similar depth.*
 
 # Frontend: React Application
@@ -1358,3 +1399,27 @@ This comprehensive guide covers all aspects of the TVIDZ platform, from basic ar
 For additional support or contributions, please refer to the main project repository and issue tracker.
 
 **Happy coding! 🚀**
+
+## Build Information Accuracy Fix
+
+- The frontend now receives up-to-date build information (date, time, git commit) via Docker build arguments and environment variables.
+- To ensure the UI shows the correct build info, always rebuild the images and restart the containers after code changes:
+  ```sh
+  export BUILD_DATE=$(date +%Y-%m-%d)
+  export BUILD_TIME=$(date +%H:%M:%S)
+  export GIT_COMMIT=$(git rev-parse --short HEAD)
+  docker compose build --no-cache
+  docker compose up -d
+  ```
+- The build info section in the UI will now reflect the latest commit and build time after each deployment.
+
+## Duplicate Detection Update
+
+- The backend now only considers videos as duplicates if they have at least 5 scene cut timestamps that match exactly (no 0.1s tolerance).
+- This change greatly reduces false positives, especially for unrelated videos with similar but not identical scene cuts.
+- If you want to further tune the threshold or matching logic, adjust the `min_match` parameter or the matching code in `inspector/db.py`.
+
+## Maintenance Policy
+
+- The documentation is updated with every code or configuration change to ensure accuracy and up-to-date guidance.
+- The database is cleaned (reset) after each deployment or code update, so you always start with a fresh state for testing and analysis.
