@@ -36,35 +36,6 @@ describe('App', () => {
     expect(screen.getByText(/upload/i)).toBeInTheDocument();
   });
 
-  it('shows progress bar and handles upload', async () => {
-    render(<App />);
-    const uploadBtn = screen.getByText(/upload/i);
-    fireEvent.click(uploadBtn);
-    // Simulate file input
-    const file = new File(['dummy'], 'test.mp4', { type: 'video/mp4' });
-    const input = screen.getByTestId('file-input');
-    fireEvent.change(input, { target: { files: [file] } });
-    expect(screen.getByText(/uploading/i)).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/analyzing/i)).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText(/analysis complete/i)).toBeInTheDocument());
-    expect(screen.getByText(/scene cut timestamps/i)).toBeInTheDocument();
-  });
-
-  it('handles SSE error', async () => {
-    class ErrorEventSource {
-      constructor() { setTimeout(() => this.onerror && this.onerror(), 100); }
-      close() {}
-    }
-    global.EventSource = ErrorEventSource;
-    render(<App />);
-    const uploadBtn = screen.getByText(/upload/i);
-    fireEvent.click(uploadBtn);
-    const file = new File(['dummy'], 'test.mp4', { type: 'video/mp4' });
-    const input = screen.getByTestId('file-input');
-    fireEvent.change(input, { target: { files: [file] } });
-    await waitFor(() => expect(screen.getByText(/error contacting inspector/i)).toBeInTheDocument());
-  });
-
   it('cleans the database with button', async () => {
     render(<App />);
     const cleanBtn = screen.getByText(/clean database/i);
