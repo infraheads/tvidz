@@ -66,7 +66,7 @@ describe('App', () => {
     render(<App />);
     const cleanBtn = screen.getByText(/clean database/i);
     fireEvent.click(cleanBtn);
-    await waitFor(() => expect(screen.getByText(/database cleaned successfully/i)).toBeInTheDocument());
+    expect(await screen.findByText(/database cleaned successfully/i)).toBeInTheDocument();
   });
 
   it('shows build info', async () => {
