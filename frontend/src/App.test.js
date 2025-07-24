@@ -1,9 +1,4 @@
-import '@testing-library/jest-dom';
-import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import App from './App';
-
-// Mock window.EventSource
+// Mock EventSource, fetch, XMLHttpRequest
 class MockEventSource {
   constructor(url) {
     this.url = url;
@@ -21,19 +16,16 @@ class MockEventSource {
 }
 global.EventSource = MockEventSource;
 
-// Mock fetch for all network requests
 global.fetch = jest.fn((url, opts) => {
-  if (url.endsWith('/admin/clear-db')) {
+  if (url.includes('/admin/clear-db')) {
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'cleared' }) });
   }
-  if (url.endsWith('/build-info')) {
+  if (url.includes('/build-info')) {
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ inspector: { build_date: '2024-07-01', build_time: '12:00:00', git_commit: 'abc123', service: 'inspector' } }) });
   }
-  // Default mock for other fetches
   return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
 });
 
-// Mock XMLHttpRequest for S3 uploads
 class MockXHR {
   constructor() {
     this.upload = {};
@@ -58,6 +50,11 @@ class MockXHR {
   }
 }
 global.XMLHttpRequest = MockXHR;
+
+import '@testing-library/jest-dom';
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import App from './App';
 
 describe('App', () => {
   it('renders upload button', () => {
