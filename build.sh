@@ -12,7 +12,7 @@ BUILD_TIME=$(date +"%H:%M:%S %Z")
 
 # Get git commit hash (short)
 if git rev-parse --git-dir > /dev/null 2>&1; then
-    GIT_COMMIT=$(git rev-parse --short HEAD)
+    GIT_COMMIT=$(git rev-parse --short HEAD)◊
     echo "📝 Git commit: $GIT_COMMIT"
 else
     GIT_COMMIT="no-git"

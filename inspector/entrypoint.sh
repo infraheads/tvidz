@@ -7,15 +7,15 @@ until awslocal --endpoint-url=http://localstack:4566 sqs create-queue --queue-na
   sleep 2
 done
 
-# Always create the S3 bucket (idempotent)
+# Always create the S3 bucket (idempotent) #V Don't think it is best practise (Consider other issues such as networking) 
 awslocal --endpoint-url=http://localstack:4566 s3 mb s3://videos || true
 
-# Generate CORS config inline
+# Generate CORS config inline # Line 18  Is this a good idea ?
 cat > /tmp/cors.json <<EOF
 {
   "CORSRules": [
     {
-      "AllowedOrigins": ["*"],
+      "AllowedOrigins": ["*"], 
       "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
       "AllowedHeaders": ["*"],
       "ExposeHeaders": ["ETag"]
@@ -36,7 +36,7 @@ cat > /tmp/s3-event-config.json <<EOF
       "QueueArn": "arn:aws:sqs:us-east-1:000000000000:video-events",
       "Events": ["s3:ObjectCreated:*"]
     }
-  ]
+  ]So
 }
 EOF
 
