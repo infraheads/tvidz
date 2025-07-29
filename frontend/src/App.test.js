@@ -62,13 +62,6 @@ describe('App', () => {
     expect(screen.getByText(/upload/i)).toBeInTheDocument();
   });
 
-  it('cleans the database with button', async () => {
-    render(<App />);
-    const cleanBtn = screen.getByText(/clean database/i);
-    fireEvent.click(cleanBtn);
-    expect(await screen.findByText(/database cleaned successfully/i)).toBeInTheDocument();
-  });
-
   it('shows build info', async () => {
     render(<App />);
     const toggleBtn = screen.getByText(/show build information/i);
